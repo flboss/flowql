@@ -1,0 +1,3 @@
+[workspace]
+members = ["flowql-parser"]
+resolver = "3"
