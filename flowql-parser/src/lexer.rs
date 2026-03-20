@@ -87,6 +87,7 @@ pub enum LexerError {
     UnknownCharacter,
     IncompleteToken,
     UnclosedComment,
+    UnclosedStringLit,
     MalformedFloat,
     InternalError,
 }
@@ -104,15 +105,49 @@ impl<'a> TokenKind<'a> {
     }
 }
 
+struct Lookahead<I: Iterator> {
+    iter: I,
+    buffer: [Option<I::Item>; 2],
+}
+
+impl<I: Iterator> Lookahead<I> {
+    fn new(mut iter: I) -> Self {
+        let first = iter.next();
+        let second = iter.next();
+
+        Self {
+            iter,
+            buffer: [first, second],
+        }
+    }
+
+    fn peek(&self) -> Option<&I::Item> {
+        self.buffer[0].as_ref()
+    }
+
+    fn peek_2(&self) -> Option<&I::Item> {
+        self.buffer[1].as_ref()
+    }
+}
+
+impl<I: Iterator> Iterator for Lookahead<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let second = std::mem::replace(&mut self.buffer[1], self.iter.next());
+        std::mem::replace(&mut self.buffer[0], second)
+    }
+}
+
 struct SourceReader<'a> {
-    iter: std::iter::Peekable<CharIndices<'a>>,
+    iter: Lookahead<CharIndices<'a>>,
     pos: usize,
 }
 
 impl<'a> SourceReader<'a> {
     fn new(input: &'a str) -> Self {
         Self {
-            iter: input.char_indices().peekable(),
+            iter: Lookahead::new(input.char_indices()),
             pos: 0,
         }
     }
@@ -123,8 +158,13 @@ impl<'a> SourceReader<'a> {
         Some(next)
     }
 
-    fn peek(&mut self) -> Option<&char> {
+    fn peek(&self) -> Option<&char> {
         let (_, next) = self.iter.peek()?;
+        Some(next)
+    }
+
+    fn peek_2(&self) -> Option<&char> {
+        let (_, next) = self.iter.peek_2()?;
         Some(next)
     }
 
@@ -147,42 +187,52 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn next_token(&mut self) -> Result<Token<'a>, LexerError> {
-        let Some(ch) = self.reader.peek() else {
+        self.consume_whitespace();
+
+        let Some(&peek_1) = self.reader.peek() else {
             return Ok(Token {
                 kind: TokenKind::Eof,
                 span: Span::new(0, 0),
             });
         };
 
-        let token = match ch {
-            '_' => self.lex_ident()?,
-            _ if ch.is_ascii_alphabetic() => self.lex_ident()?,
-            _ if ch.is_ascii_digit() => self.lex_numeric()?,
-            '+' => self.lex_single(TokenKind::Plus),
-            '-' => self.lex_single(TokenKind::Minus),
-            '*' => self.lex_single(TokenKind::Star),
-            '/' => self.lex_single(TokenKind::Slash),
-            '%' => self.lex_single(TokenKind::Percent),
-            '!' => self.lex_alternative(TokenKind::Bang, '=', TokenKind::NotEqual),
-            '=' => self.lex_alternative(TokenKind::Assign, '=', TokenKind::Equal),
-            '>' => self.lex_alternative(TokenKind::Greater, '=', TokenKind::GreaterEqual),
-            '<' => self.lex_alternative(TokenKind::Less, '=', TokenKind::LessEqual),
-            ';' => self.lex_single(TokenKind::Semicolon),
-            ':' => self.lex_alternative(TokenKind::Colon, ':', TokenKind::DoubleColon),
-            ',' => self.lex_single(TokenKind::Comma),
-            '.' => self.lex_dot(),
-            '(' => self.lex_single(TokenKind::LParen),
-            ')' => self.lex_single(TokenKind::RParen),
-            '[' => self.lex_single(TokenKind::LBracket),
-            ']' => self.lex_single(TokenKind::RBracket),
-            '{' => self.lex_single(TokenKind::LBrace),
-            '}' => self.lex_single(TokenKind::RBrace),
-            other => todo!(),
+        let token = match (peek_1, self.reader.peek_2()) {
+            ('_', _) => self.lex_ident()?,
+            _ if peek_1.is_ascii_alphabetic() => self.lex_ident()?,
+            _ if peek_1.is_ascii_digit() => self.lex_numeric()?,
+            ('"', _) => self.lex_string()?,
+            ('+', _) => self.lex_single(TokenKind::Plus),
+            ('-', _) => self.lex_single(TokenKind::Minus),
+            ('*', _) => self.lex_single(TokenKind::Star),
+            ('/', _) => self.lex_single(TokenKind::Slash),
+            ('%', _) => self.lex_single(TokenKind::Percent),
+            ('|', Some('|')) => self.lex_single(TokenKind::LogicalOr),
+            ('&', Some('&')) => self.lex_single(TokenKind::LogicalAnd),
+            ('|', Some('>')) => self.lex_single(TokenKind::Pipeline),
+            ('!', Some('=')) => self.lex_single(TokenKind::NotEqual),
+            ('!', _) => self.lex_single(TokenKind::Bang),
+            ('=', Some('=')) => self.lex_single(TokenKind::Equal),
+            ('=', _) => self.lex_single(TokenKind::Assign),
+            ('>', Some('=')) => self.lex_single(TokenKind::GreaterEqual),
+            ('>', _) => self.lex_single(TokenKind::Greater),
+            ('<', Some('=')) => self.lex_single(TokenKind::LessEqual),
+            ('<', _) => self.lex_single(TokenKind::Less),
+            (';', _) => self.lex_single(TokenKind::Semicolon),
+            (':', Some(':')) => self.lex_single(TokenKind::DoubleColon),
+            (':', _) => self.lex_single(TokenKind::Colon),
+            (',', _) => self.lex_single(TokenKind::Comma),
+            ('.', Some('.')) => self.lex_triple_dot()?,
+            ('.', _) => self.lex_single(TokenKind::Dot),
+            ('(', _) => self.lex_single(TokenKind::LParen),
+            (')', _) => self.lex_single(TokenKind::RParen),
+            ('[', _) => self.lex_single(TokenKind::LBracket),
+            (']', _) => self.lex_single(TokenKind::RBracket),
+            ('{', _) => self.lex_single(TokenKind::LBrace),
+            ('}', _) => self.lex_single(TokenKind::RBrace),
+            _ => return Err(LexerError::UnknownCharacter),
         };
 
-        self.consume_whitespace();
-
-        todo!()
+        Ok(token)
     }
 
     fn consume_whitespace(&mut self) {
@@ -221,31 +271,6 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_alternative(
-        &mut self,
-        current: TokenKind<'a>,
-        expected: char,
-        alternative: TokenKind<'a>,
-    ) -> Token<'a> {
-        let start = self.reader.pos();
-        self.reader.next();
-
-        if let Some(ch) = self.reader.peek()
-            && *ch == expected
-        {
-            self.reader.next();
-            return Token {
-                kind: alternative,
-                span: Span::new(start, self.reader.pos()),
-            };
-        }
-
-        Token {
-            kind: current,
-            span: Span::new(start, self.reader.pos()),
-        }
-    }
-
     fn lex_ident(&mut self) -> Result<Token<'a>, LexerError> {
         let span = self
             .consume_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
@@ -258,6 +283,26 @@ impl<'a> Lexer<'a> {
             kind: TokenKind::Ident(ident),
             span,
         })
+    }
+
+    fn lex_string(&mut self) -> Result<Token<'a>, LexerError> {
+        let start = self.reader.pos();
+        // TODO: add support for escaping `\"`
+        let span = self.consume_while(|ch| *ch != '"');
+
+        let content = span.map_or("", |s| &self.input[s.range()]);
+
+        if let Some(ch) = self.reader.peek()
+            && *ch == '"'
+        {
+            self.reader.next();
+            return Ok(Token {
+                kind: TokenKind::StringLit(content),
+                span: Span::new(start, self.reader.pos()),
+            });
+        }
+
+        Err(LexerError::UnclosedStringLit)
     }
 
     fn lex_numeric(&mut self) -> Result<Token<'a>, LexerError> {
@@ -328,28 +373,21 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    fn lex_dot(&mut self) -> Token<'a> {
+    fn lex_triple_dot(&mut self) -> Result<Token<'a>, LexerError> {
         let start = self.reader.pos();
+        self.reader.next();
         self.reader.next();
 
         if let Some(ch) = self.reader.peek()
             && *ch == '.'
         {
             self.reader.next();
-            if let Some(ch) = self.reader.peek()
-                && *ch == '.'
-            {
-                self.reader.next();
-                return Token {
-                    kind: TokenKind::TripleDot,
-                    span: Span::new(start, self.reader.pos()),
-                };
-            }
+            return Ok(Token {
+                kind: TokenKind::TripleDot,
+                span: Span::new(start, self.reader.pos()),
+            });
         }
 
-        Token {
-            kind: TokenKind::Dot,
-            span: Span::new(start, self.reader.pos()),
-        }
+        Err(LexerError::IncompleteToken)
     }
 }
