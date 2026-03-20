@@ -82,6 +82,7 @@ pub enum TokenKind<'a> {
     Drop,
 }
 
+// TODO: add info to error variants
 pub enum LexerError {
     UnknownCharacter,
     IncompleteToken,
@@ -103,21 +104,50 @@ impl<'a> TokenKind<'a> {
     }
 }
 
+struct SourceReader<'a> {
+    iter: std::iter::Peekable<CharIndices<'a>>,
+    pos: usize,
+}
+
+impl<'a> SourceReader<'a> {
+    fn new(input: &'a str) -> Self {
+        Self {
+            iter: input.char_indices().peekable(),
+            pos: 0,
+        }
+    }
+
+    fn next(&mut self) -> Option<char> {
+        let (i, next) = self.iter.next()?;
+        self.pos = i + next.len_utf8();
+        Some(next)
+    }
+
+    fn peek(&mut self) -> Option<&char> {
+        let (_, next) = self.iter.peek()?;
+        Some(next)
+    }
+
+    fn pos(&self) -> usize {
+        self.pos
+    }
+}
+
 pub struct Lexer<'a> {
     input: &'a str,
-    chars: std::iter::Peekable<CharIndices<'a>>,
+    reader: SourceReader<'a>,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
         Self {
             input,
-            chars: input.char_indices().peekable(),
+            reader: SourceReader::new(input),
         }
     }
 
     pub fn next_token(&mut self) -> Result<Token<'a>, LexerError> {
-        let Some((_, ch)) = self.chars.peek() else {
+        let Some(ch) = self.reader.peek() else {
             return Ok(Token {
                 kind: TokenKind::Eof,
                 span: Span::new(0, 0),
@@ -125,8 +155,8 @@ impl<'a> Lexer<'a> {
         };
 
         let token = match ch {
-            '_' => self.lex_ident(),
-            _ if ch.is_ascii_alphabetic() => self.lex_ident(),
+            '_' => self.lex_ident()?,
+            _ if ch.is_ascii_alphabetic() => self.lex_ident()?,
             _ if ch.is_ascii_digit() => self.lex_numeric()?,
             '+' => self.lex_single(TokenKind::Plus),
             '-' => self.lex_single(TokenKind::Minus),
@@ -158,38 +188,36 @@ impl<'a> Lexer<'a> {
     fn consume_whitespace(&mut self) {
         // TODO: add support for comments
 
-        while let Some((_, ch)) = self.chars.peek()
+        while let Some(ch) = self.reader.peek()
             && ch.is_ascii_whitespace()
         {
-            self.chars.next();
+            self.reader.next();
         }
     }
 
     fn consume_while(&mut self, mut condition: impl FnMut(&char) -> bool) -> Option<Span> {
-        let mut end = 0;
-        let mut start = None;
+        let start = self.reader.pos();
+        let mut end = None;
 
-        while let Some((i, ch)) = self.chars.peek() {
+        while let Some(ch) = self.reader.peek() {
             if condition(ch) {
-                if start.is_none() {
-                    start = Some(*i);
-                }
-                end = i + ch.len_utf8();
-                self.chars.next();
+                self.reader.next();
+                end.get_or_insert(self.reader.pos());
             } else {
                 break;
             }
         }
 
-        start.map(|s| Span::new(s, end))
+        end.map(|e| Span::new(start, e))
     }
 
     fn lex_single(&mut self, kind: TokenKind<'a>) -> Token<'a> {
-        let (start, ch) = self.chars.next().unwrap();
+        let start = self.reader.pos();
+        self.reader.next();
 
         Token {
             kind,
-            span: Span::new(start, start + ch.len_utf8()),
+            span: Span::new(start, self.reader.pos()),
         }
     }
 
@@ -199,43 +227,48 @@ impl<'a> Lexer<'a> {
         expected: char,
         alternative: TokenKind<'a>,
     ) -> Token<'a> {
-        let (start, ch) = self.chars.next().unwrap();
-        if let Some((i, ch)) = self.chars.peek()
+        let start = self.reader.pos();
+        self.reader.next();
+
+        if let Some(ch) = self.reader.peek()
             && *ch == expected
         {
+            self.reader.next();
             return Token {
                 kind: alternative,
-                span: Span::new(start, i + ch.len_utf8()),
+                span: Span::new(start, self.reader.pos()),
             };
         }
 
         Token {
             kind: current,
-            span: Span::new(start, start + ch.len_utf8()),
+            span: Span::new(start, self.reader.pos()),
         }
     }
 
-    fn lex_ident(&mut self) -> Token<'a> {
+    fn lex_ident(&mut self) -> Result<Token<'a>, LexerError> {
         let span = self
             .consume_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-            .unwrap();
+            .ok_or(LexerError::InternalError)?;
         let ident = &self.input[span.range()];
 
         // TODO: match keywords
 
-        Token {
+        Ok(Token {
             kind: TokenKind::Ident(ident),
             span,
-        }
+        })
     }
 
     fn lex_numeric(&mut self) -> Result<Token<'a>, LexerError> {
-        let int = self.consume_while(char::is_ascii_digit).unwrap();
+        let int = self
+            .consume_while(char::is_ascii_digit)
+            .ok_or(LexerError::InternalError)?;
 
-        let decimal = if let Some((_, ch)) = self.chars.peek()
+        let decimal = if let Some(ch) = self.reader.peek()
             && *ch == '.'
         {
-            self.chars.next();
+            self.reader.next();
             let span = self
                 .consume_while(char::is_ascii_digit)
                 .ok_or(LexerError::MalformedFloat)?;
@@ -244,16 +277,16 @@ impl<'a> Lexer<'a> {
             None
         };
 
-        let exponent = if let Some((_, ch)) = self.chars.peek()
+        let exponent = if let Some(ch) = self.reader.peek()
             && (*ch == 'e' || *ch == 'E')
         {
-            self.chars.next();
+            self.reader.next();
 
             // handle negative exponent
-            if let Some((_, ch)) = self.chars.peek()
+            if let Some(ch) = self.reader.peek()
                 && *ch == '-'
             {
-                self.chars.next();
+                self.reader.next();
             }
 
             let span = self
@@ -296,25 +329,27 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_dot(&mut self) -> Token<'a> {
-        let (start, ch) = self.chars.next().unwrap();
-        if let Some((_, ch)) = self.chars.peek()
+        let start = self.reader.pos();
+        self.reader.next();
+
+        if let Some(ch) = self.reader.peek()
             && *ch == '.'
         {
-            self.chars.next();
-            if let Some((_, ch)) = self.chars.peek()
+            self.reader.next();
+            if let Some(ch) = self.reader.peek()
                 && *ch == '.'
             {
-                let (i, ch) = self.chars.next().unwrap();
+                self.reader.next();
                 return Token {
                     kind: TokenKind::TripleDot,
-                    span: Span::new(start, i + ch.len_utf8()),
+                    span: Span::new(start, self.reader.pos()),
                 };
             }
         }
 
         Token {
             kind: TokenKind::Dot,
-            span: Span::new(start, start + ch.len_utf8()),
+            span: Span::new(start, self.reader.pos()),
         }
     }
 }
