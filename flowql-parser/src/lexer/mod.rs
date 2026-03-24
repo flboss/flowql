@@ -25,7 +25,7 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn next_token(&mut self) -> Result<Token<'a>, LexerError> {
-        self.consume_whitespace();
+        self.consume_whitespace()?;
 
         let Some(&peek_1) = self.reader.peek() else {
             return Ok(Token {
@@ -46,7 +46,6 @@ impl<'a> Lexer<'a> {
             ('%', _) => self.lex_single(TokenKind::Percent),
             ('|', Some('|')) => self.lex_single(TokenKind::LogicalOr),
             ('|', Some('>')) => self.lex_single(TokenKind::Pipeline),
-            // TODO: add helper method for incomplete tokens
             ('|', _) => {
                 return Err(LexerError {
                     kind: LexerErrorKind::IncompleteToken("||"),
@@ -94,14 +93,53 @@ impl<'a> Lexer<'a> {
         Ok(token)
     }
 
-    fn consume_whitespace(&mut self) {
-        // TODO: add support for comments
+    fn consume_whitespace(&mut self) -> Result<(), LexerError> {
+        let start = self.reader.pos();
+        let mut nested = 0;
 
-        while let Some(ch) = self.reader.peek()
-            && ch.is_ascii_whitespace()
-        {
-            self.reader.next();
+        loop {
+            while let Some(ch) = self.reader.peek()
+                && ch.is_ascii_whitespace()
+            {
+                self.reader.next();
+            }
+
+            match (self.reader.peek(), self.reader.peek_2()) {
+                // line comment
+                (Some('/'), Some('/')) => {
+                    self.consume_while(|ch| *ch != '\n');
+                    self.reader.next();
+                }
+                // block comment (with nesting)
+                (Some('/'), Some('*')) => loop {
+                    self.consume_while(|ch| *ch != '/' && *ch != '*');
+                    match (self.reader.peek(), self.reader.peek_2()) {
+                        (Some('/'), Some('*')) => {
+                            self.reader.next();
+                            self.reader.next();
+                            nested += 1;
+                        }
+                        (Some('*'), Some('/')) => {
+                            self.reader.next();
+                            self.reader.next();
+                            if nested == 0 {
+                                break;
+                            }
+                            nested -= 1;
+                        }
+                        (None, _) => {
+                            return Err(LexerError {
+                                kind: LexerErrorKind::UnclosedComment,
+                                span: Span::new(start, self.reader.pos()),
+                            });
+                        }
+                        _ => {}
+                    }
+                },
+                _ => break,
+            }
         }
+        Ok(())
     }
 
     fn consume_while(&mut self, mut condition: impl FnMut(&char) -> bool) -> Option<Span> {
@@ -141,7 +179,17 @@ impl<'a> Lexer<'a> {
             })?;
         let ident = &self.input[span.range()];
 
-        // TODO: match keywords
+        let keyword = match ident {
+            "if" => Some(TokenKind::If),
+            "let" => Some(TokenKind::Let),
+            "store" => Some(TokenKind::Store),
+            "drop" => Some(TokenKind::Drop),
+            _ => None,
+        };
+
+        if let Some(kw) = keyword {
+            return Ok(Token { kind: kw, span });
+        }
 
         Ok(Token {
             kind: TokenKind::Ident(ident),
@@ -151,28 +199,45 @@ impl<'a> Lexer<'a> {
 
     fn lex_string(&mut self) -> Result<Token<'a>, LexerError> {
         let start = self.reader.pos();
-        // TODO: add support for escaping `\"`
-        let span = self.consume_while(|ch| *ch != '"');
+        self.reader.next();
+        let start_content = self.reader.pos();
 
-        let content = span.map_or("", |s| &self.input[s.range()]);
-
-        if let Some(ch) = self.reader.peek()
-            && *ch == '"'
-        {
-            self.reader.next();
-            return Ok(Token {
-                kind: TokenKind::StringLit(content),
-                span: Span::new(start, self.reader.pos()),
-            });
+        loop {
+            self.consume_while(|ch| *ch != '"' && *ch != '\\');
+            if let Some(ch) = self.reader.peek() {
+                match (ch, self.reader.peek_2()) {
+                    ('"', _) => {
+                        let content = &self.input[start_content..self.reader.pos()];
+                        self.reader.next();
+                        return Ok(Token {
+                            kind: TokenKind::StringLit(content),
+                            span: Span::new(start, self.reader.pos()),
+                        });
+                    }
+                    ('\\', Some('"')) => {
+                        self.reader.next();
+                        self.reader.next();
+                    }
+                    // TODO: replace escape sequence
+                    // TODO: implement other escaping syntax (`\\`, `\n`, `\t`, `\r`, `\x00` (ascii), `\u0000` (unicode))
+                    ('\\', _) => {
+                        self.reader.next();
+                    }
+                    _ => {}
+                }
+            } else {
+                return Err(LexerError {
+                    kind: LexerErrorKind::UnclosedStringLit,
+                    span: Span::new(start, self.reader.pos()),
+                });
+            }
         }
-
-        Err(LexerError {
-            kind: LexerErrorKind::UnclosedStringLit,
-            span: Span::new(start, self.reader.pos()),
-        })
     }
 
     fn lex_numeric(&mut self) -> Result<Token<'a>, LexerError> {
+        // TODO: support underscores in between digits
+        // TODO: hex (`0x`), binary (`0b`), octal (`0o`) literals
+
         let int = self
             .consume_while(char::is_ascii_digit)
             .ok_or_else(|| LexerError {
@@ -187,7 +252,7 @@ impl<'a> Lexer<'a> {
             let span = self
                 .consume_while(char::is_ascii_digit)
                 .ok_or_else(|| LexerError {
-                    kind: LexerErrorKind::MalformedFloat,
+                    kind: LexerErrorKind::IncompleteFloatDecimal,
                     span: Span::new(self.reader.pos(), self.reader.pos()),
                 })?;
             Some(span)
@@ -200,9 +265,9 @@ impl<'a> Lexer<'a> {
         {
             self.reader.next();
 
-            // handle negative exponent
+            // handle exponent sign
             if let Some(ch) = self.reader.peek()
-                && *ch == '-'
+                && (*ch == '-' || *ch == '+')
             {
                 self.reader.next();
             }
@@ -210,7 +275,7 @@ impl<'a> Lexer<'a> {
             let span = self
                 .consume_while(char::is_ascii_digit)
                 .ok_or_else(|| LexerError {
-                    kind: LexerErrorKind::MalformedFloat,
+                    kind: LexerErrorKind::IncompleteFloatExponent,
                     span: Span::new(self.reader.pos(), self.reader.pos()),
                 })?;
             Some(span)
@@ -218,19 +283,15 @@ impl<'a> Lexer<'a> {
             None
         };
 
-        // TODO: validate that number is not out of range before parsing
-
         // number is an integer
         if decimal.is_none() && exponent.is_none() {
+            let parsed = self.input[int.range()].parse().map_err(|_| LexerError {
+                kind: LexerErrorKind::IntegerOverflow,
+                span: int,
+            })?;
+
             return Ok(Token {
-                kind: TokenKind::IntLit(self.input[int.range()].parse().map_err(|_| {
-                    LexerError {
-                        kind: LexerErrorKind::InternalError(
-                            "expected integer parsing to be successful",
-                        ),
-                        span: int,
-                    }
-                })?),
+                kind: TokenKind::IntLit(parsed),
                 span: int,
             });
         }

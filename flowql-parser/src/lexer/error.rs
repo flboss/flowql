@@ -5,13 +5,18 @@ pub struct LexerError {
     pub(crate) span: Span,
 }
 
-// TODO: add info to error variants
 pub(crate) enum LexerErrorKind {
     UnknownCharacter(char),
     IncompleteToken(&'static str),
     UnclosedComment,
     UnclosedStringLit,
-    MalformedFloat, // TODO: split into several errors?
+    InvalidEscapeSequence,
+    IntegerOverflow,
+    HexadecimalFloat,
+    OctalFloat,
+    BinaryFloat,
+    IncompleteFloatExponent,
+    IncompleteFloatDecimal,
     InternalError(&'static str),
 }
 
