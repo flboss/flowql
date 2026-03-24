@@ -16,7 +16,6 @@ pub(crate) enum LexerErrorKind {
     OctalFloat,
     BinaryFloat,
     IncompleteFloatExponent,
-    IncompleteFloatDecimal,
     InternalError(&'static str),
 }
 

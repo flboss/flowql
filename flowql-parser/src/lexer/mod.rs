@@ -236,26 +236,32 @@ impl<'a> Lexer<'a> {
 
     fn lex_numeric(&mut self) -> Result<Token<'a>, LexerError> {
         // TODO: support underscores in between digits
-        // TODO: hex (`0x`), binary (`0b`), octal (`0o`) literals
+
+        let radix = match (self.reader.peek(), self.reader.peek_2()) {
+            (Some('0'), Some('x')) => 16,
+            (Some('0'), Some('o')) => 8,
+            (Some('0'), Some('b')) => 2,
+            _ => 10,
+        };
+        if radix != 10 {
+            self.reader.next();
+            self.reader.next();
+        }
 
         let int = self
-            .consume_while(char::is_ascii_digit)
+            .consume_while(|ch| ch.is_digit(radix))
             .ok_or_else(|| LexerError {
                 kind: LexerErrorKind::InternalError("expected number to have length >= 1"),
                 span: Span::new(self.reader.pos(), self.reader.pos()),
             })?;
 
-        let decimal = if let Some(ch) = self.reader.peek()
-            && *ch == '.'
+        let decimal = if let Some(peek) = self.reader.peek()
+            && *peek == '.'
+            && let Some(peek_2) = self.reader.peek_2()
+            && peek_2.is_ascii_digit()
         {
             self.reader.next();
-            let span = self
-                .consume_while(char::is_ascii_digit)
-                .ok_or_else(|| LexerError {
-                    kind: LexerErrorKind::IncompleteFloatDecimal,
-                    span: Span::new(self.reader.pos(), self.reader.pos()),
-                })?;
-            Some(span)
+            Some(self.consume_while(char::is_ascii_digit).unwrap())
         } else {
             None
         };
@@ -276,7 +282,7 @@ impl<'a> Lexer<'a> {
                 .consume_while(char::is_ascii_digit)
                 .ok_or_else(|| LexerError {
                     kind: LexerErrorKind::IncompleteFloatExponent,
-                    span: Span::new(self.reader.pos(), self.reader.pos()),
+                    span: Span::new(int.start, self.reader.pos()),
                 })?;
             Some(span)
         } else {
@@ -285,10 +291,11 @@ impl<'a> Lexer<'a> {
 
         // number is an integer
         if decimal.is_none() && exponent.is_none() {
-            let parsed = self.input[int.range()].parse().map_err(|_| LexerError {
-                kind: LexerErrorKind::IntegerOverflow,
-                span: int,
-            })?;
+            let parsed =
+                i64::from_str_radix(&self.input[int.range()], radix).map_err(|_| LexerError {
+                    kind: LexerErrorKind::IntegerOverflow,
+                    span: int,
+                })?;
 
             return Ok(Token {
                 kind: TokenKind::IntLit(parsed),
@@ -305,12 +312,23 @@ impl<'a> Lexer<'a> {
             span = span.merge(&exp);
         }
 
+        // error on non-decimal float literal
+        if radix != 10 {
+            return Err(LexerError {
+                kind: match radix {
+                    16 => LexerErrorKind::HexadecimalFloat,
+                    8 => LexerErrorKind::OctalFloat,
+                    2 => LexerErrorKind::BinaryFloat,
+                    _ => unreachable!(),
+                },
+                span,
+            });
+        }
+
         Ok(Token {
             kind: TokenKind::FloatLit(self.input[span.range()].parse().map_err(|_| {
                 LexerError {
-                    kind: LexerErrorKind::InternalError(
-                        "expected integer parsing to be successful",
-                    ),
+                    kind: LexerErrorKind::InternalError("failed to parse float literal"),
                     span,
                 }
             })?),
