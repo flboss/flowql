@@ -11,6 +11,7 @@ mod cursor;
 pub mod error;
 mod token;
 
+#[derive(Debug, Clone)]
 pub struct Lexer<'a> {
     input: &'a str,
     reader: SourceReader<'a>,
@@ -39,46 +40,46 @@ impl<'a> Lexer<'a> {
             _ if peek_1.is_ascii_alphabetic() => self.lex_ident()?,
             _ if peek_1.is_ascii_digit() => self.lex_numeric()?,
             ('"', _) => self.lex_string()?,
-            ('+', _) => self.lex_single(TokenKind::Plus),
-            ('-', _) => self.lex_single(TokenKind::Minus),
-            ('*', _) => self.lex_single(TokenKind::Star),
-            ('/', _) => self.lex_single(TokenKind::Slash),
-            ('%', _) => self.lex_single(TokenKind::Percent),
-            ('|', Some('|')) => self.lex_single(TokenKind::LogicalOr),
-            ('|', Some('>')) => self.lex_single(TokenKind::Pipeline),
+            ('+', _) => self.lex_chars(1, TokenKind::Plus),
+            ('-', _) => self.lex_chars(1, TokenKind::Minus),
+            ('*', _) => self.lex_chars(1, TokenKind::Star),
+            ('/', _) => self.lex_chars(1, TokenKind::Slash),
+            ('%', _) => self.lex_chars(1, TokenKind::Percent),
+            ('|', Some('|')) => self.lex_chars(2, TokenKind::LogicalOr),
+            ('|', Some('>')) => self.lex_chars(2, TokenKind::Pipeline),
             ('|', _) => {
                 return Err(LexerError {
                     kind: LexerErrorKind::IncompleteToken("||"),
                     span: Span::new(self.reader.pos(), self.reader.pos()),
                 });
             }
-            ('&', Some('&')) => self.lex_single(TokenKind::LogicalAnd),
+            ('&', Some('&')) => self.lex_chars(2, TokenKind::LogicalAnd),
             ('&', _) => {
                 return Err(LexerError {
                     kind: LexerErrorKind::IncompleteToken("&&"),
                     span: Span::new(self.reader.pos(), self.reader.pos()),
                 });
             }
-            ('!', Some('=')) => self.lex_single(TokenKind::NotEqual),
-            ('!', _) => self.lex_single(TokenKind::Bang),
-            ('=', Some('=')) => self.lex_single(TokenKind::Equal),
-            ('=', _) => self.lex_single(TokenKind::Assign),
-            ('>', Some('=')) => self.lex_single(TokenKind::GreaterEqual),
-            ('>', _) => self.lex_single(TokenKind::Greater),
-            ('<', Some('=')) => self.lex_single(TokenKind::LessEqual),
-            ('<', _) => self.lex_single(TokenKind::Less),
-            (';', _) => self.lex_single(TokenKind::Semicolon),
-            (':', Some(':')) => self.lex_single(TokenKind::DoubleColon),
-            (':', _) => self.lex_single(TokenKind::Colon),
-            (',', _) => self.lex_single(TokenKind::Comma),
+            ('!', Some('=')) => self.lex_chars(2, TokenKind::NotEqual),
+            ('!', _) => self.lex_chars(1, TokenKind::Bang),
+            ('=', Some('=')) => self.lex_chars(2, TokenKind::Equal),
+            ('=', _) => self.lex_chars(1, TokenKind::Assign),
+            ('>', Some('=')) => self.lex_chars(2, TokenKind::GreaterEqual),
+            ('>', _) => self.lex_chars(1, TokenKind::Greater),
+            ('<', Some('=')) => self.lex_chars(2, TokenKind::LessEqual),
+            ('<', _) => self.lex_chars(1, TokenKind::Less),
+            (';', _) => self.lex_chars(1, TokenKind::Semicolon),
+            (':', Some(':')) => self.lex_chars(2, TokenKind::DoubleColon),
+            (':', _) => self.lex_chars(1, TokenKind::Colon),
+            (',', _) => self.lex_chars(1, TokenKind::Comma),
             ('.', Some('.')) => self.lex_triple_dot()?,
-            ('.', _) => self.lex_single(TokenKind::Dot),
-            ('(', _) => self.lex_single(TokenKind::LParen),
-            (')', _) => self.lex_single(TokenKind::RParen),
-            ('[', _) => self.lex_single(TokenKind::LBracket),
-            (']', _) => self.lex_single(TokenKind::RBracket),
-            ('{', _) => self.lex_single(TokenKind::LBrace),
-            ('}', _) => self.lex_single(TokenKind::RBrace),
+            ('.', _) => self.lex_chars(1, TokenKind::Dot),
+            ('(', _) => self.lex_chars(1, TokenKind::LParen),
+            (')', _) => self.lex_chars(1, TokenKind::RParen),
+            ('[', _) => self.lex_chars(1, TokenKind::LBracket),
+            (']', _) => self.lex_chars(1, TokenKind::RBracket),
+            ('{', _) => self.lex_chars(1, TokenKind::LBrace),
+            ('}', _) => self.lex_chars(1, TokenKind::RBrace),
             _ => {
                 let start = self.reader.pos();
                 self.reader.next();
@@ -122,10 +123,10 @@ impl<'a> Lexer<'a> {
                         (Some('*'), Some('/')) => {
                             self.reader.next();
                             self.reader.next();
+                            nested -= 1;
                             if nested == 0 {
                                 break;
                             }
-                            nested -= 1;
                         }
                         (None, _) => {
                             return Err(LexerError {
@@ -160,9 +161,11 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_single(&mut self, kind: TokenKind<'a>) -> Token<'a> {
+    fn lex_chars(&mut self, num: usize, kind: TokenKind<'a>) -> Token<'a> {
         let start = self.reader.pos();
-        self.reader.next();
+        for _ in 0..num {
+            self.reader.next();
+        }
 
         Token {
             kind,
@@ -255,7 +258,7 @@ impl<'a> Lexer<'a> {
                 span: Span::new(self.reader.pos(), self.reader.pos()),
             })?;
 
-        let decimal = if let Some(peek) = self.reader.peek()
+        let fractional = if let Some(peek) = self.reader.peek()
             && *peek == '.'
             && let Some(peek_2) = self.reader.peek_2()
             && peek_2.is_ascii_digit()
@@ -290,7 +293,7 @@ impl<'a> Lexer<'a> {
         };
 
         // number is an integer
-        if decimal.is_none() && exponent.is_none() {
+        if fractional.is_none() && exponent.is_none() {
             let parsed =
                 i64::from_str_radix(&self.input[int.range()], radix).map_err(|_| LexerError {
                     kind: LexerErrorKind::IntegerOverflow,
@@ -305,8 +308,8 @@ impl<'a> Lexer<'a> {
 
         let mut span = int;
 
-        if let Some(dec) = decimal {
-            span = span.merge(&dec);
+        if let Some(frac) = fractional {
+            span = span.merge(&frac);
         }
         if let Some(exp) = exponent {
             span = span.merge(&exp);
@@ -355,5 +358,196 @@ impl<'a> Lexer<'a> {
             kind: LexerErrorKind::IncompleteToken("..."),
             span: Span::new(start, self.reader.pos()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lex(input: &str) -> Result<Vec<Token<'_>>, LexerError> {
+        let mut lexer = Lexer::new(input);
+        let mut tokens = Vec::new();
+
+        loop {
+            let tok = lexer.next_token()?;
+            if tok.is_eof() {
+                break;
+            }
+            tokens.push(tok);
+        }
+
+        Ok(tokens)
+    }
+
+    fn kinds<'a>(tokens: &[Token<'a>]) -> Vec<TokenKind<'a>> {
+        tokens.iter().map(|tok| tok.kind).collect()
+    }
+
+    fn spans(tokens: &[Token]) -> Vec<Span> {
+        tokens.iter().map(|tok| tok.span).collect()
+    }
+
+    #[test]
+    fn lexes_ident() {
+        let tokens = lex("abc123 _987 if XYZ_").unwrap();
+
+        assert_eq!(
+            kinds(&tokens),
+            vec![
+                TokenKind::Ident("abc123"),
+                TokenKind::Ident("_987"),
+                TokenKind::If,
+                TokenKind::Ident("XYZ_"),
+            ]
+        );
+        assert_eq!(
+            spans(&tokens),
+            vec![
+                Span::new(0, 6),
+                Span::new(7, 11),
+                Span::new(12, 14),
+                Span::new(15, 19),
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_numeric() {
+        let tokens = lex("9876 0x7FFA 0b11101110 1E+3 0.005 00040.550e-256").unwrap();
+
+        assert_eq!(
+            kinds(&tokens),
+            vec![
+                TokenKind::IntLit(9876),
+                TokenKind::IntLit(0x7FFA),
+                TokenKind::IntLit(0b11101110),
+                TokenKind::FloatLit(1e3),
+                TokenKind::FloatLit(0.005),
+                TokenKind::FloatLit(40.55e-256),
+            ]
+        );
+
+        assert_eq!(
+            kinds(&lex("1.").unwrap()),
+            vec![TokenKind::IntLit(1), TokenKind::Dot]
+        );
+        assert_eq!(
+            kinds(&lex(".02").unwrap()),
+            vec![TokenKind::Dot, TokenKind::IntLit(2)]
+        );
+        assert!(lex("4e").is_err());
+        assert!(lex("0xFF.0").is_err());
+        assert!(lex("9223372036854775808").is_err());
+    }
+
+    #[test]
+    fn lexes_string() {
+        let tokens = lex(r#""words  🟥 \" " "üéÆç""#).unwrap();
+
+        assert_eq!(
+            kinds(&tokens),
+            vec![
+                TokenKind::StringLit(r#"words  🟥 \" "#),
+                TokenKind::StringLit("üéÆç")
+            ]
+        );
+
+        assert!(lex(r#""unclosed "#).is_err());
+    }
+
+    #[test]
+    fn lexes_operators() {
+        let tokens = lex("+-*/%!&&|||>").unwrap();
+
+        assert_eq!(
+            kinds(&tokens),
+            vec![
+                TokenKind::Plus,
+                TokenKind::Minus,
+                TokenKind::Star,
+                TokenKind::Slash,
+                TokenKind::Percent,
+                TokenKind::Bang,
+                TokenKind::LogicalAnd,
+                TokenKind::LogicalOr,
+                TokenKind::Pipeline,
+            ]
+        );
+
+        assert!(lex("|").is_err());
+        assert!(lex("&").is_err());
+    }
+
+    #[test]
+    fn lexes_comparison() {
+        let tokens = lex("!!====>>=<=<").unwrap();
+
+        assert_eq!(
+            kinds(&tokens),
+            vec![
+                TokenKind::Bang,
+                TokenKind::NotEqual,
+                TokenKind::Equal,
+                TokenKind::Assign,
+                TokenKind::Greater,
+                TokenKind::GreaterEqual,
+                TokenKind::LessEqual,
+                TokenKind::Less,
+            ]
+        );
+        assert_eq!(
+            spans(&tokens),
+            vec![
+                Span::new(0, 1),
+                Span::new(1, 3),
+                Span::new(3, 5),
+                Span::new(5, 6),
+                Span::new(6, 7),
+                Span::new(7, 9),
+                Span::new(9, 11),
+                Span::new(11, 12),
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_punctuation() {
+        let tokens = lex("::;:,....([{)]}").unwrap();
+
+        assert_eq!(
+            kinds(&tokens),
+            vec![
+                TokenKind::DoubleColon,
+                TokenKind::Semicolon,
+                TokenKind::Colon,
+                TokenKind::Comma,
+                TokenKind::TripleDot,
+                TokenKind::Dot,
+                TokenKind::LParen,
+                TokenKind::LBracket,
+                TokenKind::LBrace,
+                TokenKind::RParen,
+                TokenKind::RBracket,
+                TokenKind::RBrace,
+            ]
+        );
+
+        assert!(lex("..").is_err());
+    }
+
+    #[test]
+    fn lexes_whitespace() {
+        assert!(lex(" \t\r\n").unwrap().is_empty());
+
+        let comments = r#"
+        // this is a comment
+        /* block comment
+           /* sub-comment */
+        */
+        "#;
+        assert!(lex(comments).unwrap().is_empty());
+
+        assert!(lex("/* ").is_err());
     }
 }

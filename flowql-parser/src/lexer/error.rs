@@ -1,10 +1,12 @@
 use crate::error::{Diagnostic, Span};
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct LexerError {
     pub(crate) kind: LexerErrorKind,
     pub(crate) span: Span,
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum LexerErrorKind {
     UnknownCharacter(char),
     IncompleteToken(&'static str),

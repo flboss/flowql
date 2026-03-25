@@ -1,5 +1,6 @@
 use std::str::CharIndices;
 
+#[derive(Debug, Clone)]
 struct Lookahead<I: Iterator> {
     iter: I,
     buffer: [Option<I::Item>; 2],
@@ -34,6 +35,7 @@ impl<I: Iterator> Iterator for Lookahead<I> {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct SourceReader<'a> {
     iter: Lookahead<CharIndices<'a>>,
     pos: usize,
@@ -65,5 +67,48 @@ impl<'a> SourceReader<'a> {
 
     pub fn pos(&self) -> usize {
         self.pos
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookahead() {
+        let mut iter = Lookahead::new([4, 9, 16].into_iter());
+
+        assert_eq!(iter.peek(), Some(&4));
+        assert_eq!(iter.peek_2(), Some(&9));
+        assert_eq!(iter.next(), Some(4));
+
+        assert_eq!(iter.peek(), Some(&9));
+        assert_eq!(iter.peek_2(), Some(&16));
+        assert_eq!(iter.next(), Some(9));
+
+        assert_eq!(iter.peek(), Some(&16));
+        assert_eq!(iter.peek_2(), None);
+        assert_eq!(iter.next(), Some(16));
+
+        assert_eq!(iter.peek(), None);
+        assert_eq!(iter.peek_2(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn source_reader() {
+        let mut reader = SourceReader::new("A🟥ç\n");
+
+        assert_eq!(reader.pos(), 0);
+        reader.next();
+        assert_eq!(reader.pos(), 1);
+        reader.next();
+        assert_eq!(reader.pos(), 5);
+        reader.next();
+        assert_eq!(reader.pos(), 7);
+        reader.next();
+        assert_eq!(reader.pos(), 8);
+        reader.next();
+        assert_eq!(reader.pos(), 8);
     }
 }

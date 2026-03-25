@@ -1,12 +1,12 @@
 use std::ops::Range;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DiagnosticLevel {
     Error,
     Warning,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub level: DiagnosticLevel,
     pub title: &'static str,
@@ -15,7 +15,7 @@ pub struct Diagnostic {
     pub help: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
@@ -35,5 +35,20 @@ impl Span {
             start: self.start.min(other.start),
             end: self.end.max(other.end),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn span() {
+        let span1 = Span::new(0, 26);
+        let span2 = Span::new(21, 52);
+        let span3 = Span::new(1001, 4096);
+
+        assert_eq!(span1.merge(&span2), Span::new(0, 52));
+        assert_eq!(span3.merge(&span2), Span::new(21, 4096));
     }
 }

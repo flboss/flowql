@@ -1,10 +1,12 @@
 use crate::error::Span;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Token<'a> {
     pub kind: TokenKind<'a>,
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenKind<'a> {
     // end of file
     Eof,
@@ -58,4 +60,10 @@ pub enum TokenKind<'a> {
     Let,
     Store,
     Drop,
+}
+
+impl<'a> Token<'a> {
+    pub fn is_eof(&self) -> bool {
+        matches!(self.kind, TokenKind::Eof)
+    }
 }
