@@ -1,13 +1,13 @@
-use crate::error::{Diagnostic, Span};
+use crate::error::Span;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct LexerError {
-    pub(crate) kind: LexerErrorKind,
-    pub(crate) span: Span,
+pub struct LexicalError {
+    pub kind: LexicalErrorKind,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum LexerErrorKind {
+pub enum LexicalErrorKind {
     UnknownCharacter(char),
     IncompleteToken(&'static str),
     UnclosedComment,
@@ -19,10 +19,4 @@ pub(crate) enum LexerErrorKind {
     BinaryFloat,
     IncompleteFloatExponent,
     InternalError(&'static str),
-}
-
-impl LexerError {
-    pub fn to_diagnostic(self) -> Diagnostic {
-        todo!()
-    }
 }

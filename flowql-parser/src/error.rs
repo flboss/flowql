@@ -1,5 +1,28 @@
 use std::ops::Range;
 
+use crate::lexer::error::LexicalError;
+use crate::parser::error::SyntaxError;
+
+pub type ParserResult<T> = Result<T, FlowqlError>;
+
+#[derive(Debug, Clone)]
+pub enum FlowqlError {
+    Lexical(LexicalError),
+    Syntax(SyntaxError),
+}
+
+impl From<LexicalError> for FlowqlError {
+    fn from(err: LexicalError) -> Self {
+        Self::Lexical(err)
+    }
+}
+
+impl From<SyntaxError> for FlowqlError {
+    fn from(err: SyntaxError) -> Self {
+        Self::Syntax(err)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiagnosticLevel {
     Error,

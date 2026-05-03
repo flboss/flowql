@@ -58,7 +58,9 @@ pub enum TokenKind<'a> {
     // keywords
     If,
     Let,
-    Store,
+    Create,
+    Set,
+    Migrate,
     Drop,
 }
 

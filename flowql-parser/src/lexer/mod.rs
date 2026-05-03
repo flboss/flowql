@@ -1,15 +1,13 @@
-use crate::{
-    error::Span,
-    lexer::{
-        cursor::SourceReader,
-        error::{LexerError, LexerErrorKind},
-        token::{Token, TokenKind},
-    },
+use crate::error::{ParserResult, Span};
+use crate::lexer::{
+    cursor::SourceReader,
+    error::{LexicalError, LexicalErrorKind},
+    token::{Token, TokenKind},
 };
 
 mod cursor;
 pub mod error;
-mod token;
+pub mod token;
 
 #[derive(Debug, Clone)]
 pub struct Lexer<'a> {
@@ -25,7 +23,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn next_token(&mut self) -> Result<Token<'a>, LexerError> {
+    pub fn next_token(&mut self) -> ParserResult<Token<'a>> {
         self.consume_whitespace()?;
 
         let Some(&peek_1) = self.reader.peek() else {
@@ -47,19 +45,15 @@ impl<'a> Lexer<'a> {
             ('%', _) => self.lex_chars(1, TokenKind::Percent),
             ('|', Some('|')) => self.lex_chars(2, TokenKind::LogicalOr),
             ('|', Some('>')) => self.lex_chars(2, TokenKind::Pipeline),
-            ('|', _) => {
-                return Err(LexerError {
-                    kind: LexerErrorKind::IncompleteToken("||"),
-                    span: Span::new(self.reader.pos(), self.reader.pos()),
-                });
-            }
+            ('|', _) => Err(LexicalError {
+                kind: LexicalErrorKind::IncompleteToken("||"),
+                span: Span::new(self.reader.pos(), self.reader.pos()),
+            })?,
             ('&', Some('&')) => self.lex_chars(2, TokenKind::LogicalAnd),
-            ('&', _) => {
-                return Err(LexerError {
-                    kind: LexerErrorKind::IncompleteToken("&&"),
-                    span: Span::new(self.reader.pos(), self.reader.pos()),
-                });
-            }
+            ('&', _) => Err(LexicalError {
+                kind: LexicalErrorKind::IncompleteToken("&&"),
+                span: Span::new(self.reader.pos(), self.reader.pos()),
+            })?,
             ('!', Some('=')) => self.lex_chars(2, TokenKind::NotEqual),
             ('!', _) => self.lex_chars(1, TokenKind::Bang),
             ('=', Some('=')) => self.lex_chars(2, TokenKind::Equal),
@@ -84,17 +78,17 @@ impl<'a> Lexer<'a> {
                 let start = self.reader.pos();
                 self.reader.next();
 
-                return Err(LexerError {
-                    kind: LexerErrorKind::UnknownCharacter(peek_1),
+                Err(LexicalError {
+                    kind: LexicalErrorKind::UnknownCharacter(peek_1),
                     span: Span::new(start, self.reader.pos()),
-                });
+                })?
             }
         };
 
         Ok(token)
     }
 
-    fn consume_whitespace(&mut self) -> Result<(), LexerError> {
+    fn consume_whitespace(&mut self) -> Result<(), LexicalError> {
         let start = self.reader.pos();
         let mut nested = 0;
 
@@ -129,8 +123,8 @@ impl<'a> Lexer<'a> {
                             }
                         }
                         (None, _) => {
-                            return Err(LexerError {
-                                kind: LexerErrorKind::UnclosedComment,
+                            return Err(LexicalError {
+                                kind: LexicalErrorKind::UnclosedComment,
                                 span: Span::new(start, self.reader.pos()),
                             });
                         }
@@ -173,11 +167,11 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_ident(&mut self) -> Result<Token<'a>, LexerError> {
+    fn lex_ident(&mut self) -> Result<Token<'a>, LexicalError> {
         let span = self
             .consume_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-            .ok_or_else(|| LexerError {
-                kind: LexerErrorKind::InternalError("expected identifier to have length >= 1"),
+            .ok_or_else(|| LexicalError {
+                kind: LexicalErrorKind::InternalError("expected identifier to have length >= 1"),
                 span: Span::new(self.reader.pos(), self.reader.pos()),
             })?;
         let ident = &self.input[span.range()];
@@ -185,7 +179,9 @@ impl<'a> Lexer<'a> {
         let keyword = match ident {
             "if" => Some(TokenKind::If),
             "let" => Some(TokenKind::Let),
-            "store" => Some(TokenKind::Store),
+            "create" => Some(TokenKind::Create),
+            "set" => Some(TokenKind::Set),
+            "migrate" => Some(TokenKind::Migrate),
             "drop" => Some(TokenKind::Drop),
             _ => None,
         };
@@ -200,7 +196,7 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    fn lex_string(&mut self) -> Result<Token<'a>, LexerError> {
+    fn lex_string(&mut self) -> Result<Token<'a>, LexicalError> {
         let start = self.reader.pos();
         self.reader.next();
         let start_content = self.reader.pos();
@@ -229,15 +225,15 @@ impl<'a> Lexer<'a> {
                     _ => {}
                 }
             } else {
-                return Err(LexerError {
-                    kind: LexerErrorKind::UnclosedStringLit,
+                return Err(LexicalError {
+                    kind: LexicalErrorKind::UnclosedStringLit,
                     span: Span::new(start, self.reader.pos()),
                 });
             }
         }
     }
 
-    fn lex_numeric(&mut self) -> Result<Token<'a>, LexerError> {
+    fn lex_numeric(&mut self) -> Result<Token<'a>, LexicalError> {
         // TODO: support underscores in between digits
 
         let radix = match (self.reader.peek(), self.reader.peek_2()) {
@@ -253,8 +249,8 @@ impl<'a> Lexer<'a> {
 
         let int = self
             .consume_while(|ch| ch.is_digit(radix))
-            .ok_or_else(|| LexerError {
-                kind: LexerErrorKind::InternalError("expected number to have length >= 1"),
+            .ok_or_else(|| LexicalError {
+                kind: LexicalErrorKind::InternalError("expected number to have length >= 1"),
                 span: Span::new(self.reader.pos(), self.reader.pos()),
             })?;
 
@@ -283,8 +279,8 @@ impl<'a> Lexer<'a> {
 
             let span = self
                 .consume_while(char::is_ascii_digit)
-                .ok_or_else(|| LexerError {
-                    kind: LexerErrorKind::IncompleteFloatExponent,
+                .ok_or_else(|| LexicalError {
+                    kind: LexicalErrorKind::IncompleteFloatExponent,
                     span: Span::new(int.start, self.reader.pos()),
                 })?;
             Some(span)
@@ -295,8 +291,8 @@ impl<'a> Lexer<'a> {
         // number is an integer
         if fractional.is_none() && exponent.is_none() {
             let parsed =
-                i64::from_str_radix(&self.input[int.range()], radix).map_err(|_| LexerError {
-                    kind: LexerErrorKind::IntegerOverflow,
+                i64::from_str_radix(&self.input[int.range()], radix).map_err(|_| LexicalError {
+                    kind: LexicalErrorKind::IntegerOverflow,
                     span: int,
                 })?;
 
@@ -317,11 +313,11 @@ impl<'a> Lexer<'a> {
 
         // error on non-decimal float literal
         if radix != 10 {
-            return Err(LexerError {
+            return Err(LexicalError {
                 kind: match radix {
-                    16 => LexerErrorKind::HexadecimalFloat,
-                    8 => LexerErrorKind::OctalFloat,
-                    2 => LexerErrorKind::BinaryFloat,
+                    16 => LexicalErrorKind::HexadecimalFloat,
+                    8 => LexicalErrorKind::OctalFloat,
+                    2 => LexicalErrorKind::BinaryFloat,
                     _ => unreachable!(),
                 },
                 span,
@@ -330,8 +326,8 @@ impl<'a> Lexer<'a> {
 
         Ok(Token {
             kind: TokenKind::FloatLit(self.input[span.range()].parse().map_err(|_| {
-                LexerError {
-                    kind: LexerErrorKind::InternalError("failed to parse float literal"),
+                LexicalError {
+                    kind: LexicalErrorKind::InternalError("failed to parse float literal"),
                     span,
                 }
             })?),
@@ -339,7 +335,7 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    fn lex_triple_dot(&mut self) -> Result<Token<'a>, LexerError> {
+    fn lex_triple_dot(&mut self) -> Result<Token<'a>, LexicalError> {
         let start = self.reader.pos();
         self.reader.next();
         self.reader.next();
@@ -354,8 +350,8 @@ impl<'a> Lexer<'a> {
             });
         }
 
-        Err(LexerError {
-            kind: LexerErrorKind::IncompleteToken("..."),
+        Err(LexicalError {
+            kind: LexicalErrorKind::IncompleteToken("..."),
             span: Span::new(start, self.reader.pos()),
         })
     }
@@ -365,7 +361,7 @@ impl<'a> Lexer<'a> {
 mod tests {
     use super::*;
 
-    fn lex(input: &str) -> Result<Vec<Token<'_>>, LexerError> {
+    fn lex(input: &str) -> ParserResult<Vec<Token<'_>>> {
         let mut lexer = Lexer::new(input);
         let mut tokens = Vec::new();
 
