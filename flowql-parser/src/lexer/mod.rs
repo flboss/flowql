@@ -45,15 +45,9 @@ impl<'a> Lexer<'a> {
             ('%', _) => self.lex_chars(1, TokenKind::Percent),
             ('|', Some('|')) => self.lex_chars(2, TokenKind::LogicalOr),
             ('|', Some('>')) => self.lex_chars(2, TokenKind::Pipeline),
-            ('|', _) => Err(LexicalError {
-                kind: LexicalErrorKind::IncompleteToken("||"),
-                span: Span::new(self.reader.pos(), self.reader.pos()),
-            })?,
+            ('|', _) => Err(self.lex_garbage(1, LexicalErrorKind::IncompleteToken("||")))?,
             ('&', Some('&')) => self.lex_chars(2, TokenKind::LogicalAnd),
-            ('&', _) => Err(LexicalError {
-                kind: LexicalErrorKind::IncompleteToken("&&"),
-                span: Span::new(self.reader.pos(), self.reader.pos()),
-            })?,
+            ('&', _) => Err(self.lex_garbage(1, LexicalErrorKind::IncompleteToken("&&")))?,
             ('!', Some('=')) => self.lex_chars(2, TokenKind::NotEqual),
             ('!', _) => self.lex_chars(1, TokenKind::Bang),
             ('=', Some('=')) => self.lex_chars(2, TokenKind::Equal),
@@ -152,6 +146,18 @@ impl<'a> Lexer<'a> {
             Some(Span::new(start, self.reader.pos()))
         } else {
             None
+        }
+    }
+
+    fn lex_garbage(&mut self, num: usize, err_kind: LexicalErrorKind) -> LexicalError {
+        let start = self.reader.pos();
+        for _ in 0..num {
+            self.reader.next();
+        }
+
+        LexicalError {
+            kind: err_kind,
+            span: Span::new(start, self.reader.pos()),
         }
     }
 
@@ -354,6 +360,14 @@ impl<'a> Lexer<'a> {
             kind: LexicalErrorKind::IncompleteToken("..."),
             span: Span::new(start, self.reader.pos()),
         })
+    }
+}
+
+impl<'a> Iterator for Lexer<'a> {
+    type Item = ParserResult<Token<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(self.next_token())
     }
 }
 

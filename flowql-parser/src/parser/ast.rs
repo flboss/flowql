@@ -1,3 +1,7 @@
+pub struct Program<'a> {
+    statements: Vec<Statement<'a>>,
+}
+
 pub enum Statement<'a> {
     LetBinding {
         name: &'a str,
