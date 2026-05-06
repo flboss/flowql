@@ -1,61 +1,56 @@
-pub struct Program<'a> {
-    statements: Vec<Statement<'a>>,
+#[derive(Default, Debug, Clone)]
+pub struct Program {
+    pub statements: Vec<Statement>,
 }
 
-pub enum Statement<'a> {
-    LetBinding {
-        name: &'a str,
-        expr: Expression<'a>,
-    },
-    Assignment {
-        left: Expression<'a>,
-        right: Expression<'a>,
-    },
-    CreatePersistent {
-        name: &'a str,
-        expr: Expression<'a>,
-    },
-    SetPersistent {
-        name: &'a str,
-        expr: Expression<'a>,
-    },
-    MigratePersistent {
-        name: &'a str,
-        expr: Expression<'a>,
-    },
-    DropPersistent {
-        name: &'a str,
-    },
+impl Program {
+    pub fn new() -> Self {
+        Program {
+            statements: Vec::new(),
+        }
+    }
 }
 
-pub enum Expression<'a> {
+#[derive(Debug, Clone)]
+pub enum Statement {
+    LetBinding { name: String, expr: Expression },
+    CreatePersistent { name: String, expr: Expression },
+    SetPersistent { name: String, expr: Expression },
+    MigratePersistent { name: String, expr: Expression },
+    DropPersistent { name: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum Expression {
     Literal(LiteralValue),
-    Variable(&'a str),
+    Variable(String),
     Pipeline {
-        left: Box<Expression<'a>>,
+        left: Box<Expression>,
         operations: Vec<PipelineOp>,
     },
     BinaryOp {
-        left: Box<Expression<'a>>,
+        left: Box<Expression>,
         op: BinaryOperator,
-        right: Box<Expression<'a>>,
+        right: Box<Expression>,
     },
     UnaryOp {
         op: UnaryOperator,
-        right: Box<Expression<'a>>,
+        right: Box<Expression>,
     },
     FunctionCall {
-        name: &'a str,
-        args: Vec<Expression<'a>>,
+        name: String,
+        args: Vec<Expression>,
     },
 }
 
+#[derive(Debug, Clone)]
 pub enum LiteralValue {
     Int(u64),
     Float(f64),
     String(String),
 }
 
+#[derive(Debug, Clone)]
 pub enum BinaryOperator {
     Add,
     Subtract,
@@ -72,9 +67,18 @@ pub enum BinaryOperator {
     LessEqual,
 }
 
+#[derive(Debug, Clone)]
 pub enum UnaryOperator {
     Negate,
     LogicalNot,
 }
 
-pub enum PipelineOp {}
+#[derive(Debug, Clone)]
+pub enum PipelineOp {
+    Select,
+    Filter,
+}
+
+#[derive(Debug, Clone)]
+pub struct SelectOperation {}
+pub struct FilterOperation {}

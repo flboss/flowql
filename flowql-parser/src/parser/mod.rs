@@ -13,22 +13,22 @@ where
     I: Iterator<Item = ParserResult<Token<'a>>>,
 {
     tokens: Peekable<I>,
-    ast: Vec<Statement<'a>>,
+    pub ast: Program,
 }
 
 impl<'a> Parser<'a, Lexer<'a>> {
     pub fn new(input: &'a str) -> Parser<'a, Lexer<'a>> {
         Parser {
             tokens: Lexer::new(input).peekable(),
-            ast: Vec::new(),
+            ast: Program::new(),
         }
     }
 
-    pub fn parse_program(self) -> ParserResult<&'a Program<'a>> {
+    pub fn parse_program(&mut self) -> ParserResult<&Program> {
         todo!()
     }
 
-    fn parse_statement(&self) -> ParserResult<&'a Statement<'a>> {
+    fn parse_statement(&mut self) -> ParserResult<&Statement> {
         todo!()
     }
 }
