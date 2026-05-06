@@ -367,7 +367,19 @@ impl<'a> Iterator for Lexer<'a> {
     type Item = ParserResult<Token<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        Some(self.next_token())
+        let token = self.next_token();
+
+        if matches!(
+            token,
+            Ok(Token {
+                kind: TokenKind::Eof,
+                ..
+            })
+        ) {
+            return None;
+        }
+
+        Some(token)
     }
 }
 
