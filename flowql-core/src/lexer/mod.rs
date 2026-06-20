@@ -1,0 +1,877 @@
+mod token;
+pub use token::{Span, Token, TokenKind};
+
+use thiserror::Error;
+
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum LexError {
+    #[error("unexpected character: '{0}'")]
+    UnexpectedChar(char, Span),
+
+    #[error("unclosed string literal")]
+    UnclosedString(Span),
+
+    #[error("invalid number literal: {0}")]
+    InvalidNumber(String, Span),
+
+    #[error("{0}")]
+    Custom(String, Span),
+}
+
+pub struct Lexer<'a> {
+    source: &'a str,
+    pos: usize,
+    start: usize,
+}
+
+impl<'a> Lexer<'a> {
+    pub fn new(source: &'a str) -> Self {
+        Lexer {
+            source,
+            pos: 0,
+            start: 0,
+        }
+    }
+
+    pub fn next_token(&mut self) -> Result<Token, LexError> {
+        self.skip_whitespace_and_comments();
+        self.start = self.pos;
+
+        let Some(c) = self.peek() else {
+            return Ok(self.token(TokenKind::Eof));
+        };
+
+        match c {
+            '(' => self.advance_and_return(TokenKind::LParen),
+            ')' => self.advance_and_return(TokenKind::RParen),
+            '[' => self.advance_and_return(TokenKind::LBracket),
+            ']' => self.advance_and_return(TokenKind::RBracket),
+            '}' => self.advance_and_return(TokenKind::RBrace),
+            ',' => self.advance_and_return(TokenKind::Comma),
+            ';' => self.advance_and_return(TokenKind::Semicolon),
+
+            '+' => self.lex_plus(),
+            '-' => self.advance_and_return(TokenKind::Minus),
+            '*' => self.advance_and_return(TokenKind::Star),
+            '/' => self.advance_and_return(TokenKind::Slash),
+            '%' => self.advance_and_return(TokenKind::Percent),
+            '.' => self.lex_dot(),
+            ':' => self.lex_colon(),
+            '=' => self.lex_eq(),
+            '!' => self.lex_bang(),
+            '<' => self.lex_lt(),
+            '>' => self.lex_gt(),
+            '&' => self.lex_amp(),
+            '|' => self.lex_pipe(),
+            '{' => self.advance_and_return(TokenKind::LBrace),
+            '?' => self.advance_and_return(TokenKind::Question),
+            '@' => self.lex_at_literal(),
+            '"' => self.lex_string(),
+            '0'..='9' => self.lex_number(),
+            c if is_ident_start(c) => self.lex_ident_or_keyword(),
+            _ => {
+                let span = self.single_span();
+                self.pos += c.len_utf8();
+                Err(LexError::UnexpectedChar(c, span))
+            }
+        }
+    }
+
+    // ---- helpers ----
+
+    fn remaining(&self) -> &'a str {
+        &self.source[self.pos..]
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.remaining().chars().next()
+    }
+
+    fn peek2(&self) -> Option<char> {
+        let mut chars = self.remaining().chars();
+        chars.next()?;
+        chars.next()
+    }
+
+    fn advance(&mut self) -> Option<char> {
+        let c = self.remaining().chars().next()?;
+        self.pos += c.len_utf8();
+        Some(c)
+    }
+
+    fn advance_and_return(&mut self, kind: TokenKind) -> Result<Token, LexError> {
+        self.advance();
+        Ok(self.token(kind))
+    }
+
+    fn token(&self, kind: TokenKind) -> Token {
+        Token::new(kind, Span::new(self.start, self.pos))
+    }
+
+    fn span(&self, start: usize) -> Span {
+        Span::new(start, self.pos)
+    }
+
+    fn single_span(&self) -> Span {
+        Span::new(self.pos, self.pos + 1)
+    }
+
+    fn skip_whitespace_and_comments(&mut self) {
+        loop {
+            match self.peek() {
+                Some(c) if c.is_whitespace() => {
+                    self.advance();
+                }
+                Some('/') if self.peek2() == Some('/') => {
+                    self.advance();
+                    self.advance();
+                    while let Some(c) = self.peek() {
+                        if c == '\n' {
+                            break;
+                        }
+                        self.advance();
+                    }
+                }
+                Some('/') if self.peek2() == Some('*') => {
+                    self.advance();
+                    self.advance();
+                    self.skip_block_comment(1);
+                }
+                _ => break,
+            }
+        }
+    }
+
+    fn skip_block_comment(&mut self, depth: u32) {
+        while let Some(c) = self.advance() {
+            match c {
+                '/' if self.peek() == Some('*') => {
+                    self.advance();
+                    self.skip_block_comment(depth + 1);
+                }
+                '*' if self.peek() == Some('/') => {
+                    self.advance();
+                    if depth == 1 {
+                        return;
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // ---- lexers for specific token types ----
+
+    fn lex_plus(&mut self) -> Result<Token, LexError> {
+        self.advance();
+        if self.peek() == Some('+') {
+            self.advance();
+            Ok(self.token(TokenKind::PlusPlus))
+        } else {
+            Ok(self.token(TokenKind::Plus))
+        }
+    }
+
+    fn lex_dot(&mut self) -> Result<Token, LexError> {
+        self.advance();
+        if self.peek() == Some('.') {
+            self.advance();
+            if self.peek() == Some('=') {
+                self.advance();
+                Ok(self.token(TokenKind::DotDotEq))
+            } else {
+                Ok(self.token(TokenKind::DotDot))
+            }
+        } else {
+            Ok(self.token(TokenKind::Dot))
+        }
+    }
+
+    fn lex_colon(&mut self) -> Result<Token, LexError> {
+        self.advance();
+        if self.peek() == Some(':') {
+            self.advance();
+            Ok(self.token(TokenKind::ColonColon))
+        } else {
+            Ok(self.token(TokenKind::Colon))
+        }
+    }
+
+    fn lex_eq(&mut self) -> Result<Token, LexError> {
+        self.advance();
+        if self.peek() == Some('=') {
+            self.advance();
+            Ok(self.token(TokenKind::EqEq))
+        } else {
+            Ok(self.token(TokenKind::Eq))
+        }
+    }
+
+    fn lex_bang(&mut self) -> Result<Token, LexError> {
+        self.advance();
+        if self.peek() == Some('=') {
+            self.advance();
+            Ok(self.token(TokenKind::BangEq))
+        } else {
+            Ok(self.token(TokenKind::Bang))
+        }
+    }
+
+    fn lex_lt(&mut self) -> Result<Token, LexError> {
+        self.advance();
+        if self.peek() == Some('=') {
+            self.advance();
+            Ok(self.token(TokenKind::LAngleEq))
+        } else {
+            Ok(self.token(TokenKind::LAngle))
+        }
+    }
+
+    fn lex_gt(&mut self) -> Result<Token, LexError> {
+        self.advance();
+        if self.peek() == Some('=') {
+            self.advance();
+            Ok(self.token(TokenKind::RAngleEq))
+        } else {
+            Ok(self.token(TokenKind::RAngle))
+        }
+    }
+
+    fn lex_amp(&mut self) -> Result<Token, LexError> {
+        self.advance();
+        if self.peek() == Some('&') {
+            self.advance();
+            Ok(self.token(TokenKind::AmpAmp))
+        } else {
+            let span = self.span(self.pos - 1);
+            Err(LexError::UnexpectedChar('&', span))
+        }
+    }
+
+    fn lex_pipe(&mut self) -> Result<Token, LexError> {
+        self.advance();
+        if self.peek() == Some('>') {
+            self.advance();
+            Ok(self.token(TokenKind::PipeR))
+        } else if self.peek() == Some('|') {
+            self.advance();
+            Ok(self.token(TokenKind::PipePipe))
+        } else {
+            let span = self.span(self.pos - 1);
+            Err(LexError::UnexpectedChar('|', span))
+        }
+    }
+
+    fn lex_ident_or_keyword(&mut self) -> Result<Token, LexError> {
+        let start = self.pos;
+        while let Some(c) = self.peek() {
+            if is_ident_continue(c) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let ident = &self.source[start..self.pos];
+        let kind = match ident {
+            "let" => TokenKind::Let,
+            "table" => TokenKind::Table,
+            "if" => TokenKind::If,
+            "else" => TokenKind::Else,
+            "true" => TokenKind::True,
+            "false" => TokenKind::False,
+            _ => TokenKind::Ident(ident.to_string()),
+        };
+        Ok(self.token(kind))
+    }
+
+    fn lex_number(&mut self) -> Result<Token, LexError> {
+        let start = self.pos;
+
+        if self.peek() == Some('0') {
+            match self.peek2() {
+                Some('x') | Some('X') => return self.lex_hex_int(),
+                Some('o') | Some('O') => return self.lex_octal_int(),
+                Some('b') | Some('B') => return self.lex_binary_int(),
+                _ => {}
+            }
+        }
+
+        self.read_digits();
+
+        let has_dot =
+            self.peek() == Some('.') && self.peek2().is_some_and(|c| c.is_ascii_digit());
+
+        if has_dot {
+            self.advance();
+            self.read_digits();
+            if let Some('e') | Some('E') = self.peek() {
+                self.lex_float_exponent();
+            }
+            let raw = &self.source[start..self.pos];
+            let clean = raw.replace('_', "");
+            let value: f64 = clean.parse().map_err(|_| {
+                LexError::InvalidNumber(raw.to_string(), Span::new(start, self.pos))
+            })?;
+            Ok(self.token(TokenKind::Float(value)))
+        } else if let Some('e') | Some('E') = self.peek() {
+            self.lex_float_exponent();
+            let raw = &self.source[start..self.pos];
+            let clean = raw.replace('_', "");
+            let value: f64 = clean.parse().map_err(|_| {
+                LexError::InvalidNumber(raw.to_string(), Span::new(start, self.pos))
+            })?;
+            Ok(self.token(TokenKind::Float(value)))
+        } else {
+            let raw = &self.source[start..self.pos];
+            let clean = raw.replace('_', "");
+            let value: i64 = clean.parse().map_err(|_| {
+                LexError::InvalidNumber(raw.to_string(), Span::new(start, self.pos))
+            })?;
+            Ok(self.token(TokenKind::Int(value)))
+        }
+    }
+
+    fn lex_hex_int(&mut self) -> Result<Token, LexError> {
+        let start = self.pos;
+        self.advance();
+        self.advance();
+        while let Some(c) = self.peek() {
+            if c.is_ascii_hexdigit() || c == '_' {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let raw = &self.source[start..self.pos];
+        let clean = raw.replace('_', "").replace("0x", "").replace("0X", "");
+        let value = i64::from_str_radix(&clean, 16)
+            .map_err(|_| LexError::InvalidNumber(raw.to_string(), Span::new(start, self.pos)))?;
+        Ok(self.token(TokenKind::Int(value)))
+    }
+
+    fn lex_octal_int(&mut self) -> Result<Token, LexError> {
+        let start = self.pos;
+        self.advance();
+        self.advance();
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() && c != '8' && c != '9' || c == '_' {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let raw = &self.source[start..self.pos];
+        let clean = raw.replace('_', "").replace("0o", "").replace("0O", "");
+        let value = i64::from_str_radix(&clean, 8)
+            .map_err(|_| LexError::InvalidNumber(raw.to_string(), Span::new(start, self.pos)))?;
+        Ok(self.token(TokenKind::Int(value)))
+    }
+
+    fn lex_binary_int(&mut self) -> Result<Token, LexError> {
+        let start = self.pos;
+        self.advance();
+        self.advance();
+        while let Some(c) = self.peek() {
+            if c == '0' || c == '1' || c == '_' {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let raw = &self.source[start..self.pos];
+        let clean = raw.replace('_', "").replace("0b", "").replace("0B", "");
+        let value = i64::from_str_radix(&clean, 2)
+            .map_err(|_| LexError::InvalidNumber(raw.to_string(), Span::new(start, self.pos)))?;
+        Ok(self.token(TokenKind::Int(value)))
+    }
+
+    fn lex_float_exponent(&mut self) {
+        self.advance();
+        if let Some('+') | Some('-') = self.peek() {
+            self.advance();
+        }
+        self.read_digits();
+    }
+
+    fn read_digits(&mut self) {
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() || c == '_' {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn lex_string(&mut self) -> Result<Token, LexError> {
+        let start = self.pos;
+        self.advance();
+        let mut value = String::new();
+
+        loop {
+            match self.advance() {
+                None => {
+                    return Err(LexError::UnclosedString(Span::new(start, self.pos)));
+                }
+                Some('"') => {
+                    break;
+                }
+                Some('\\') => {
+                    match self.advance() {
+                        None => {
+                            return Err(LexError::UnclosedString(Span::new(start, self.pos)));
+                        }
+                        Some('"') => value.push('"'),
+                        Some('\\') => value.push('\\'),
+                        Some('n') => value.push('\n'),
+                        Some('t') => value.push('\t'),
+                        Some('r') => value.push('\r'),
+                        Some('0') => value.push('\0'),
+                        Some('u') => {
+                            let hex_start = self.pos;
+                            for _ in 0..4 {
+                                self.advance();
+                            }
+                            let hex = &self.source[hex_start..self.pos];
+                            let code = u32::from_str_radix(hex, 16).map_err(|_| {
+                                LexError::Custom(
+                                    format!("invalid unicode escape: \\u{}", hex),
+                                    Span::new(hex_start - 2, self.pos),
+                                )
+                            })?;
+                            let c = char::from_u32(code).ok_or_else(|| {
+                                LexError::Custom(
+                                    format!("invalid unicode code point: {}", code),
+                                    Span::new(hex_start - 2, self.pos),
+                                )
+                            })?;
+                            value.push(c);
+                        }
+                        Some(c) => {
+                            value.push('\\');
+                            value.push(c);
+                        }
+                    }
+                }
+                Some(c) => value.push(c),
+            }
+        }
+
+        Ok(self.token(TokenKind::Str(value)))
+    }
+
+    fn lex_at_literal(&mut self) -> Result<Token, LexError> {
+        let start = self.pos;
+        self.advance();
+
+        let first = self.read_digits_str();
+
+        match self.peek() {
+            Some('-') => {
+                self.advance();
+                let month = self.read_digits_str();
+                if self.peek() != Some('-') {
+                    return Err(
+                        self.err_at("expected '-' in date literal", Span::new(start, self.pos))
+                    );
+                }
+                self.advance();
+                let day = self.read_digits_str();
+
+                let mut hour = 0u32;
+                let mut minute = 0u32;
+                let mut secs = 0u32;
+                let mut nanos = 0u32;
+
+                if self.peek() == Some('_') {
+                    self.advance();
+                    hour = self
+                        .read_digits_str()
+                        .parse::<u32>()
+                        .map_err(|_| self.err_at("invalid hour", Span::new(start, self.pos)))?;
+                    if self.peek() != Some(':') {
+                        return Err(
+                            self.err_at("expected ':' in time literal", Span::new(start, self.pos))
+                        );
+                    }
+                    self.advance();
+                    minute = self
+                        .read_digits_str()
+                        .parse::<u32>()
+                        .map_err(|_| self.err_at("invalid minute", Span::new(start, self.pos)))?;
+                    if self.peek() == Some(':') {
+                        self.advance();
+                        let sec_str = self.read_digits_str();
+                        let (whole, frac) = split_seconds(&sec_str);
+                        secs = whole;
+                        nanos = frac;
+                    }
+                }
+
+                let parsed = parse_date(&first, &month, &day);
+                let date_secs = parsed.map_err(|e| self.err_at(&e, Span::new(start, self.pos)))?;
+                let total_secs = date_secs + hour as i64 * 3600 + minute as i64 * 60 + secs as i64;
+                Ok(self.token(TokenKind::Instant(total_secs, nanos)))
+            }
+            Some(':') => {
+                let hours: u32 = first
+                    .parse::<u32>()
+                    .map_err(|_| self.err_at("invalid hours", Span::new(start, self.pos)))?;
+                self.advance();
+                let minutes_str = self.read_digits_str();
+                let minutes: u32 = minutes_str
+                    .parse::<u32>()
+                    .map_err(|_| self.err_at("invalid minutes", Span::new(start, self.pos)))?;
+
+                let mut seconds = 0u32;
+                let mut nanos = 0u32;
+
+                if self.peek() == Some(':') {
+                    self.advance();
+                    let sec_str = self.read_digits_str();
+                    let (whole, frac) = split_seconds(&sec_str);
+                    seconds = whole;
+                    nanos = frac;
+                }
+
+                let total = hours as i64 * 3600 + minutes as i64 * 60 + seconds as i64;
+                Ok(self.token(TokenKind::Duration(total, nanos)))
+            }
+            _ => Err(self.err_at("invalid time literal", Span::new(start, self.pos))),
+        }
+    }
+
+    fn read_digits_str(&mut self) -> String {
+        let start = self.pos;
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.source[start..self.pos].to_string()
+    }
+
+    fn err_at(&self, msg: &str, span: Span) -> LexError {
+        LexError::Custom(msg.to_string(), span)
+    }
+}
+
+fn is_ident_start(c: char) -> bool {
+    c.is_alphabetic() || c == '_'
+}
+
+fn is_ident_continue(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn split_seconds(s: &str) -> (u32, u32) {
+    if let Some(dot_pos) = s.find('.') {
+        let whole: u32 = s[..dot_pos].parse().unwrap_or(0);
+        let frac_str = &s[dot_pos + 1..];
+        let mut padded = String::from(frac_str);
+        while padded.len() < 9 {
+            padded.push('0');
+        }
+        if padded.len() > 9 {
+            padded = padded[..9].to_string();
+        }
+        let nanos: u32 = padded.parse().unwrap_or(0);
+        (whole, nanos)
+    } else {
+        let whole: u32 = s.parse().unwrap_or(0);
+        (whole, 0)
+    }
+}
+
+fn parse_date(year_str: &str, month_str: &str, day_str: &str) -> Result<i64, String> {
+    let year: i64 = year_str.parse().map_err(|_| "invalid year".to_string())?;
+    let month: u32 = month_str.parse().map_err(|_| "invalid month".to_string())?;
+    let day: u32 = day_str.parse().map_err(|_| "invalid day".to_string())?;
+
+    if !(1..=12).contains(&month) {
+        return Err("invalid month".to_string());
+    }
+    if !(1..=31).contains(&day) {
+        return Err("invalid day".to_string());
+    }
+
+    let days =
+        days_since_unix_epoch(year, month, day).ok_or_else(|| "date out of range".to_string())?;
+    Ok(days * 86400)
+}
+
+fn days_since_unix_epoch(year: i64, month: u32, day: u32) -> Option<i64> {
+    let (y, m) = if month <= 2 {
+        (year - 1, month + 12)
+    } else {
+        (year, month)
+    };
+
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m as i64 - 3) + 2) / 5 + day as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+
+    let days_since_epoch = era * 146097 + doe - 719468;
+
+    Some(days_since_epoch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lex_all(source: &str) -> Vec<TokenKind> {
+        let mut lexer = Lexer::new(source);
+        let mut tokens = Vec::new();
+        loop {
+            let token = lexer.next_token().unwrap();
+            let kind = token.kind.clone();
+            if kind == TokenKind::Eof {
+                break;
+            }
+            tokens.push(kind);
+        }
+        tokens
+    }
+
+    fn check_tokens(source: &str, expected: &[TokenKind]) {
+        let actual = lex_all(source);
+        assert_eq!(actual, expected, "source: {:?}", source);
+    }
+
+    #[test]
+    fn test_keywords() {
+        check_tokens("let", &[TokenKind::Let]);
+        check_tokens("table", &[TokenKind::Table]);
+        check_tokens("if", &[TokenKind::If]);
+        check_tokens("else", &[TokenKind::Else]);
+        check_tokens("true", &[TokenKind::True]);
+        check_tokens("false", &[TokenKind::False]);
+    }
+
+    #[test]
+    fn test_identifier() {
+        check_tokens("hello", &[TokenKind::Ident("hello".into())]);
+        check_tokens("user_name", &[TokenKind::Ident("user_name".into())]);
+        check_tokens("_internal", &[TokenKind::Ident("_internal".into())]);
+        check_tokens("join", &[TokenKind::Ident("join".into())]);
+        check_tokens("Some", &[TokenKind::Ident("Some".into())]);
+        check_tokens("None", &[TokenKind::Ident("None".into())]);
+    }
+
+    #[test]
+    fn test_keyword_not_in_identifier() {
+        check_tokens("letter", &[TokenKind::Ident("letter".into())]);
+    }
+
+    #[test]
+    fn test_integers() {
+        check_tokens("42", &[TokenKind::Int(42)]);
+        check_tokens("0", &[TokenKind::Int(0)]);
+        check_tokens("-5", &[TokenKind::Minus, TokenKind::Int(5)]);
+        check_tokens("1_000", &[TokenKind::Int(1000)]);
+        check_tokens("0xDEAD", &[TokenKind::Int(0xDEAD)]);
+        check_tokens("0o755", &[TokenKind::Int(0o755)]);
+        check_tokens("0b1101", &[TokenKind::Int(0b1101)]);
+        check_tokens("0b1101_0010", &[TokenKind::Int(0b1101_0010)]);
+    }
+
+    #[test]
+    fn test_floats() {
+        check_tokens("3.21", &[TokenKind::Float(3.21)]);
+        check_tokens("0.001", &[TokenKind::Float(0.001)]);
+        check_tokens("1e10", &[TokenKind::Float(1e10)]);
+        check_tokens("1.5e-3", &[TokenKind::Float(1.5e-3)]);
+        check_tokens("1.5e+3", &[TokenKind::Float(1500.0)]);
+    }
+
+    #[test]
+    fn test_strings() {
+        check_tokens("\"hello\"", &[TokenKind::Str("hello".into())]);
+        check_tokens("\"hello world\"", &[TokenKind::Str("hello world".into())]);
+        check_tokens(
+            "\"escaped \\\"quote\\\"\"",
+            &[TokenKind::Str("escaped \"quote\"".into())],
+        );
+    }
+
+    #[test]
+    fn test_operators() {
+        check_tokens("+", &[TokenKind::Plus]);
+        check_tokens("-", &[TokenKind::Minus]);
+        check_tokens("*", &[TokenKind::Star]);
+        check_tokens("/", &[TokenKind::Slash]);
+        check_tokens("%", &[TokenKind::Percent]);
+        check_tokens("==", &[TokenKind::EqEq]);
+        check_tokens("!=", &[TokenKind::BangEq]);
+        check_tokens("<", &[TokenKind::LAngle]);
+        check_tokens("<=", &[TokenKind::LAngleEq]);
+        check_tokens(">", &[TokenKind::RAngle]);
+        check_tokens(">=", &[TokenKind::RAngleEq]);
+        check_tokens("&&", &[TokenKind::AmpAmp]);
+        check_tokens("||", &[TokenKind::PipePipe]);
+        check_tokens("!", &[TokenKind::Bang]);
+        check_tokens("++", &[TokenKind::PlusPlus]);
+        check_tokens("..", &[TokenKind::DotDot]);
+        check_tokens("..=", &[TokenKind::DotDotEq]);
+        check_tokens("|>", &[TokenKind::PipeR]);
+        check_tokens("::", &[TokenKind::ColonColon]);
+        check_tokens("=", &[TokenKind::Eq]);
+        check_tokens(".", &[TokenKind::Dot]);
+        check_tokens(":", &[TokenKind::Colon]);
+    }
+
+    #[test]
+    fn test_delimiters() {
+        check_tokens("(", &[TokenKind::LParen]);
+        check_tokens(")", &[TokenKind::RParen]);
+        check_tokens("[", &[TokenKind::LBracket]);
+        check_tokens("]", &[TokenKind::RBracket]);
+        check_tokens("{", &[TokenKind::LBrace]);
+        check_tokens("}", &[TokenKind::RBrace]);
+        check_tokens(";", &[TokenKind::Semicolon]);
+        check_tokens(",", &[TokenKind::Comma]);
+        check_tokens("?", &[TokenKind::Question]);
+    }
+
+    #[test]
+    fn test_whitespace() {
+        check_tokens("let   x", &[TokenKind::Let, TokenKind::Ident("x".into())]);
+        check_tokens("let\nx", &[TokenKind::Let, TokenKind::Ident("x".into())]);
+        check_tokens("let\tx", &[TokenKind::Let, TokenKind::Ident("x".into())]);
+    }
+
+    #[test]
+    fn test_line_comment() {
+        check_tokens(
+            "let // this is a comment\nx",
+            &[TokenKind::Let, TokenKind::Ident("x".into())],
+        );
+    }
+
+    #[test]
+    fn test_block_comment() {
+        check_tokens(
+            "let /* comment */ x",
+            &[TokenKind::Let, TokenKind::Ident("x".into())],
+        );
+    }
+
+    #[test]
+    fn test_nested_block_comment() {
+        check_tokens(
+            "let /* outer /* inner */ still */ x",
+            &[TokenKind::Let, TokenKind::Ident("x".into())],
+        );
+    }
+
+    #[test]
+    fn test_pipeline_expression() {
+        check_tokens(
+            "users |> [ name, age ]",
+            &[
+                TokenKind::Ident("users".into()),
+                TokenKind::PipeR,
+                TokenKind::LBracket,
+                TokenKind::Ident("name".into()),
+                TokenKind::Comma,
+                TokenKind::Ident("age".into()),
+                TokenKind::RBracket,
+            ],
+        );
+    }
+
+    #[test]
+    fn test_filter_syntax() {
+        check_tokens(
+            "users |> [? age > 18 ]",
+            &[
+                TokenKind::Ident("users".into()),
+                TokenKind::PipeR,
+                TokenKind::LBracket,
+                TokenKind::Question,
+                TokenKind::Ident("age".into()),
+                TokenKind::RAngle,
+                TokenKind::Int(18),
+                TokenKind::RBracket,
+            ],
+        );
+    }
+
+    #[test]
+    fn test_join_syntax() {
+        check_tokens(
+            "users |> join<orders>(id == orders::user_id) {: total = orders::amount }",
+            &[
+                TokenKind::Ident("users".into()),
+                TokenKind::PipeR,
+                TokenKind::Ident("join".into()),
+                TokenKind::LAngle,
+                TokenKind::Ident("orders".into()),
+                TokenKind::RAngle,
+                TokenKind::LParen,
+                TokenKind::Ident("id".into()),
+                TokenKind::EqEq,
+                TokenKind::Ident("orders".into()),
+                TokenKind::ColonColon,
+                TokenKind::Ident("user_id".into()),
+                TokenKind::RParen,
+                TokenKind::LBrace,
+                TokenKind::Colon,
+                TokenKind::Ident("total".into()),
+                TokenKind::Eq,
+                TokenKind::Ident("orders".into()),
+                TokenKind::ColonColon,
+                TokenKind::Ident("amount".into()),
+                TokenKind::RBrace,
+            ],
+        );
+    }
+
+    #[test]
+    fn test_typographic_operators() {
+        let result = Lexer::new("&").next_token();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_duration_literal() {
+        let tokens = lex_all("@14:30:00");
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0], TokenKind::Duration(_, _)));
+    }
+
+    #[test]
+    fn test_instant_literal() {
+        let tokens = lex_all("@2026-05-31");
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0], TokenKind::Instant(_, _)));
+    }
+
+    #[test]
+    fn test_instant_with_time() {
+        let tokens = lex_all("@2026-05-31_14:30:00");
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0], TokenKind::Instant(_, _)));
+    }
+
+    #[test]
+    fn test_span_tracking() {
+        let mut lexer = Lexer::new("let x");
+        let t1 = lexer.next_token().unwrap();
+        assert_eq!(t1.span, Span::new(0, 3));
+        let t2 = lexer.next_token().unwrap();
+        assert_eq!(t2.span, Span::new(4, 5));
+    }
+
+    #[test]
+    fn test_at_not_identifier() {
+        let mut lexer = Lexer::new("@not_a_time");
+        let result = lexer.next_token();
+        assert!(result.is_err());
+    }
+}
