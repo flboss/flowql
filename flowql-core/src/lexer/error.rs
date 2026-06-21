@@ -113,7 +113,7 @@ impl LexError {
 impl Diagnostic for LexError {
     fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
         Some(Box::new(std::iter::once(LabeledSpan::new_with_span(
-            None,
+            Some("here".to_string()),
             self.span(),
         ))))
     }
