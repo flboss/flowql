@@ -20,7 +20,7 @@ pub enum LexError {
     UnclosedString(SourceSpan),
 
     #[error("invalid unicode escape")]
-    InvalidUnicodeEscape(String, SourceSpan),
+    InvalidUnicodeEscape(SourceSpan),
 
     #[error("invalid unicode code point")]
     InvalidUnicodeCodePoint(u32, SourceSpan),
@@ -93,7 +93,7 @@ impl LexError {
             | LexError::IntOverflow(_, s)
             | LexError::EmptyIntLiteral(_, s)
             | LexError::InvalidFloat(_, s)
-            | LexError::InvalidUnicodeEscape(_, s)
+            | LexError::InvalidUnicodeEscape(s)
             | LexError::InvalidUnicodeCodePoint(_, s)
             | LexError::InvalidEscape(_, s)
             | LexError::InvalidTimeLiteral(s)
@@ -139,9 +139,9 @@ impl Diagnostic for LexError {
             Self::InvalidFloat(lit, _) => {
                 Box::new(format!("the literal `{lit}` is not a valid float"))
             }
-            Self::InvalidUnicodeEscape(hex, _) => Box::new(format!(
-                "valid escape: \\u followed by four hex digits, got \\u{hex}"
-            )),
+            Self::InvalidUnicodeEscape(_) => Box::new(
+                "unicode escape sequences must contain 1–6 hex digits (max U+10FFFF) surrounded by braces: \\u{{10FFFF}}",
+            ),
             Self::InvalidUnicodeCodePoint(cp, _) => {
                 Box::new(format!("U+{cp:04X} is not a valid unicode code point"))
             }

@@ -414,21 +414,36 @@ impl<'a> Lexer<'a> {
                     Some('r') => value.push('\r'),
                     Some('0') => value.push('\0'),
                     Some('u') => {
+                        let escape_start = self.pos - 2;
+                        if self.peek() != Some('{') {
+                            return Err(LexError::InvalidUnicodeEscape(SourceSpan::from(
+                                escape_start..self.pos,
+                            )));
+                        }
+                        self.advance();
                         let hex_start = self.pos;
-                        for _ in 0..4 {
+                        while self.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
                             self.advance();
                         }
                         let hex = &self.source[hex_start..self.pos];
+                        if hex.is_empty() || hex.len() > 6 {
+                            return Err(LexError::InvalidUnicodeEscape(SourceSpan::from(
+                                escape_start..self.pos,
+                            )));
+                        }
+                        if self.peek() != Some('}') {
+                            return Err(LexError::InvalidUnicodeEscape(SourceSpan::from(
+                                escape_start..self.pos,
+                            )));
+                        }
+                        self.advance();
                         let code = u32::from_str_radix(hex, 16).map_err(|_| {
-                            LexError::InvalidUnicodeEscape(
-                                hex.to_string(),
-                                SourceSpan::from(hex_start - 2..self.pos),
-                            )
+                            LexError::InvalidUnicodeEscape(SourceSpan::from(escape_start..self.pos))
                         })?;
                         let c = char::from_u32(code).ok_or_else(|| {
                             LexError::InvalidUnicodeCodePoint(
                                 code,
-                                SourceSpan::from(hex_start - 2..self.pos),
+                                SourceSpan::from(escape_start..self.pos),
                             )
                         })?;
                         value.push(c);
@@ -793,6 +808,28 @@ mod tests {
     fn test_invalid_escape() {
         let mut lexer = Lexer::new(r#""\z""#);
         assert!(lexer.next_token().is_err());
+    }
+
+    #[test]
+    fn test_unicode_escape_basic() {
+        check_tokens(r#""\u{41}""#, &[TokenKind::Str("A".into())]);
+        check_tokens(r#""\u{3A}""#, &[TokenKind::Str(":".into())]);
+        check_tokens(r#""\u{1F600}""#, &[TokenKind::Str("\u{1F600}".into())]);
+        check_tokens(r#""\u{10FFFF}""#, &[TokenKind::Str("\u{10FFFF}".into())]);
+    }
+
+    #[test]
+    fn test_unicode_escape_errors() {
+        let cases = &[
+            r#""\u{}""#,
+            r#""\u{1234567}""#,
+            r#""\u{110000}""#,
+            r#""\uX""#,
+        ];
+        for &src in cases {
+            let mut lexer = Lexer::new(src);
+            assert!(lexer.next_token().is_err(), "expected error for: {src}");
+        }
     }
 
     #[test]
