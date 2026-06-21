@@ -449,83 +449,196 @@ impl<'a> Lexer<'a> {
         Ok(self.token(TokenKind::Str(value)))
     }
 
-    // TODO: support @now/@today?
-    // shape: @today / @today_hh:mm:ss.sss
-    // shape: @now
     fn lex_at_literal(&mut self) -> Result<Token, LexError> {
         let start = self.pos;
-        self.advance();
-
-        let first = self.read_digits_str();
+        self.advance(); // consume '@'
 
         match self.peek() {
-            // shape: @YYYY-MM-DD_hh:mm:ss.sss
-            Some('-') => {
-                self.advance();
-                let month = self.read_digits_str();
-                if self.peek() != Some('-') {
-                    return Err(
-                        self.err_at("expected '-' in date literal", Span::new(start, self.pos))
-                    );
-                }
-                self.advance();
-                let day = self.read_digits_str();
-
-                let mut hour = 0u32;
-                let mut minute = 0u32;
-                let mut secs = 0u32;
-                let mut nanos = 0u32;
-
-                if self.peek() == Some('_') {
-                    self.advance();
-                    hour = self
-                        .read_digits_str()
-                        .parse::<u32>()
-                        .map_err(|_| self.err_at("invalid hour", Span::new(start, self.pos)))?;
-                    if self.peek() != Some(':') {
-                        return Err(
-                            self.err_at("expected ':' in time literal", Span::new(start, self.pos))
-                        );
-                    }
-                    self.advance();
-                    minute = self
-                        .read_digits_str()
-                        .parse::<u32>()
-                        .map_err(|_| self.err_at("invalid minute", Span::new(start, self.pos)))?;
-                    if self.peek() == Some(':') {
-                        self.advance();
-                        let sec_str = self.read_digits_str();
-                        (secs, nanos) = split_seconds(&sec_str);
-                    }
-                }
-
-                let year: i32 = first
-                    .parse()
-                    .map_err(|_| self.err_at("invalid year", Span::new(start, self.pos)))?;
-                let month: u32 = month
-                    .parse()
-                    .map_err(|_| self.err_at("invalid month", Span::new(start, self.pos)))?;
-                let day: u32 = day
-                    .parse()
-                    .map_err(|_| self.err_at("invalid day", Span::new(start, self.pos)))?;
-
-                let date = NaiveDate::from_ymd_opt(year, month, day)
-                    .ok_or_else(|| self.err_at("invalid date", Span::new(start, self.pos)))?;
-                let time = NaiveTime::from_hms_nano_opt(hour, minute, secs, nanos)
-                    .ok_or_else(|| self.err_at("invalid time", Span::new(start, self.pos)))?;
-                let dt = NaiveDateTime::new(date, time);
-                let total_secs = dt.and_utc().timestamp();
-                Ok(self.token(TokenKind::Instant(total_secs, nanos)))
-            }
-            Some('.') => {
-                // TODO: add Instant shape: @ss.sss
-                todo!()
-            }
+            Some('n') => self.lex_at_now(start),
+            Some('t') => self.lex_at_today(start),
+            Some('u') => self.lex_at_unix(start),
+            Some(c) if c.is_ascii_digit() => self.lex_at_date(start),
             _ => Err(self.err_at("invalid time literal", Span::new(start, self.pos))),
         }
     }
 
-    // TODO: #duration syntax: #1y2M3d4h5m6s7.89s
+    fn lex_at_now(&mut self, start: usize) -> Result<Token, LexError> {
+        for ch in "now".chars() {
+            match self.advance() {
+                Some(c) if c == ch => {}
+                _ => return Err(self.err_at("expected 'now'", Span::new(start, self.pos))),
+            }
+        }
+        if self.peek().is_some_and(is_ident_continue) {
+            return Err(self.err_at("expected 'now'", Span::new(start, self.pos)));
+        }
+        Ok(self.token(TokenKind::Now))
+    }
+
+    fn lex_at_today(&mut self, start: usize) -> Result<Token, LexError> {
+        for ch in "today".chars() {
+            match self.advance() {
+                Some(c) if c == ch => {}
+                _ => return Err(self.err_at("expected 'today'", Span::new(start, self.pos))),
+            }
+        }
+
+        if self.peek() == Some('_') {
+            self.advance();
+            let hour = self
+                .read_digits_str()
+                .parse::<u32>()
+                .map_err(|_| self.err_at("invalid hour", Span::new(start, self.pos)))?;
+            match self.peek() {
+                Some(':') => {
+                    self.advance();
+                }
+                _ => return Err(self.err_at("expected ':' in time", Span::new(start, self.pos))),
+            }
+            let minute = self
+                .read_digits_str()
+                .parse::<u32>()
+                .map_err(|_| self.err_at("invalid minute", Span::new(start, self.pos)))?;
+            let mut secs = 0u32;
+            let mut nanos = 0u32;
+            if self.peek() == Some(':') {
+                self.advance();
+                let sec_str = self.read_digits_str();
+                if self.peek() == Some('.') {
+                    self.advance();
+                    let frac = self.read_digits_str();
+                    (secs, nanos) = split_seconds(&format!("{}.{}", sec_str, frac));
+                } else {
+                    secs = sec_str.parse().unwrap_or(0);
+                }
+            }
+            Ok(self.token(TokenKind::TodayAt(hour, minute, secs, nanos)))
+        } else {
+            if self.peek().is_some_and(is_ident_continue) {
+                return Err(self.err_at("expected 'today'", Span::new(start, self.pos)));
+            }
+            Ok(self.token(TokenKind::Today))
+        }
+    }
+
+    fn lex_at_unix(&mut self, start: usize) -> Result<Token, LexError> {
+        for ch in "unix_".chars() {
+            match self.advance() {
+                Some(c) if c == ch => {}
+                _ => return Err(self.err_at("expected 'unix_'", Span::new(start, self.pos))),
+            }
+        }
+
+        let sec_str = self.read_digits_str();
+        if sec_str.is_empty() {
+            return Err(self.err_at("expected unix timestamp", Span::new(start, self.pos)));
+        }
+        let secs: i64 = sec_str
+            .parse()
+            .map_err(|_| self.err_at("invalid unix timestamp", Span::new(start, self.pos)))?;
+
+        let nanos = if self.peek() == Some('.') {
+            self.advance();
+            let frac = self.read_digits_str();
+            let mut padded = frac;
+            while padded.len() < 9 {
+                padded.push('0');
+            }
+            if padded.len() > 9 {
+                padded = padded[..9].to_string();
+            }
+            padded.parse().unwrap_or(0)
+        } else {
+            0
+        };
+
+        Ok(self.token(TokenKind::Instant(secs, nanos)))
+    }
+
+    fn lex_at_date(&mut self, start: usize) -> Result<Token, LexError> {
+        let year_str = self.read_digits_str();
+
+        match self.peek() {
+            Some('-') => {
+                self.advance();
+            }
+            _ => {
+                return Err(self.err_at(
+                    "expected date format yyyy-mm-dd",
+                    Span::new(start, self.pos),
+                ));
+            }
+        }
+        let month = self.read_digits_str();
+        match self.peek() {
+            Some('-') => {
+                self.advance();
+            }
+            _ => {
+                return Err(self.err_at(
+                    "expected date format yyyy-mm-dd",
+                    Span::new(start, self.pos),
+                ));
+            }
+        }
+        let day = self.read_digits_str();
+
+        let mut hour = 0u32;
+        let mut minute = 0u32;
+        let mut secs = 0u32;
+        let mut nanos = 0u32;
+
+        if self.peek() == Some('_') {
+            self.advance();
+            hour = self
+                .read_digits_str()
+                .parse::<u32>()
+                .map_err(|_| self.err_at("invalid hour", Span::new(start, self.pos)))?;
+            match self.peek() {
+                Some(':') => {
+                    self.advance();
+                }
+                _ => {
+                    return Err(self.err_at("expected ':' in time", Span::new(start, self.pos)));
+                }
+            }
+            minute = self
+                .read_digits_str()
+                .parse::<u32>()
+                .map_err(|_| self.err_at("invalid minute", Span::new(start, self.pos)))?;
+            if self.peek() == Some(':') {
+                self.advance();
+                let sec_str = self.read_digits_str();
+                if self.peek() == Some('.') {
+                    self.advance();
+                    let frac = self.read_digits_str();
+                    (secs, nanos) = split_seconds(&format!("{}.{}", sec_str, frac));
+                } else {
+                    secs = sec_str.parse().unwrap_or(0);
+                }
+            }
+        }
+
+        let year: i32 = year_str
+            .parse()
+            .map_err(|_| self.err_at("invalid year", Span::new(start, self.pos)))?;
+        let month: u32 = month
+            .parse()
+            .map_err(|_| self.err_at("invalid month", Span::new(start, self.pos)))?;
+        let day: u32 = day
+            .parse()
+            .map_err(|_| self.err_at("invalid day", Span::new(start, self.pos)))?;
+
+        let date = NaiveDate::from_ymd_opt(year, month, day)
+            .ok_or_else(|| self.err_at("invalid date", Span::new(start, self.pos)))?;
+        let time = NaiveTime::from_hms_nano_opt(hour, minute, secs, nanos)
+            .ok_or_else(|| self.err_at("invalid time", Span::new(start, self.pos)))?;
+        let dt = NaiveDateTime::new(date, time);
+        let total_secs = dt.and_utc().timestamp();
+        Ok(self.token(TokenKind::Instant(total_secs, nanos)))
+    }
+
+    // TODO: #duration syntax: #1y2m3w4d5H6M7.89S
 
     fn read_digits_str(&mut self) -> String {
         let start = self.pos;
@@ -785,6 +898,72 @@ mod tests {
     fn test_typographic_operators() {
         let result = Lexer::new("&").next_token();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_at_now() {
+        let tokens = lex_all("@now");
+        assert_eq!(tokens, &[TokenKind::Now]);
+    }
+
+    #[test]
+    fn test_at_now_error_on_extra_chars() {
+        let mut lexer = Lexer::new("@nows");
+        assert!(lexer.next_token().is_err());
+    }
+
+    #[test]
+    fn test_at_today() {
+        let tokens = lex_all("@today");
+        assert_eq!(tokens, &[TokenKind::Today]);
+    }
+
+    #[test]
+    fn test_at_today_with_time() {
+        let tokens = lex_all("@today_14:30:00");
+        assert_eq!(tokens, &[TokenKind::TodayAt(14, 30, 0, 0)]);
+    }
+
+    #[test]
+    fn test_at_today_with_fractional_seconds() {
+        let tokens = lex_all("@today_14:30:00.123");
+        assert_eq!(tokens, &[TokenKind::TodayAt(14, 30, 0, 123000000)]);
+    }
+
+    #[test]
+    fn test_at_today_error_on_extra_chars() {
+        let mut lexer = Lexer::new("@todayy");
+        assert!(lexer.next_token().is_err());
+    }
+
+    #[test]
+    fn test_at_today_error_on_bare_underscore() {
+        let mut lexer = Lexer::new("@today_");
+        assert!(lexer.next_token().is_err());
+    }
+
+    #[test]
+    fn test_at_unix() {
+        let tokens = lex_all("@unix_1717115400");
+        assert_eq!(tokens, &[TokenKind::Instant(1717115400, 0)]);
+    }
+
+    #[test]
+    fn test_at_unix_with_fractional() {
+        let tokens = lex_all("@unix_1717115400.123");
+        assert_eq!(tokens, &[TokenKind::Instant(1717115400, 123000000)]);
+    }
+
+    #[test]
+    fn test_at_unix_error_empty() {
+        let mut lexer = Lexer::new("@unix_");
+        assert!(lexer.next_token().is_err());
+    }
+
+    #[test]
+    fn test_at_unix_error_bad_prefix() {
+        let mut lexer = Lexer::new("@unixx_123");
+        assert!(lexer.next_token().is_err());
     }
 
     #[test]

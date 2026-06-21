@@ -48,6 +48,9 @@ pub enum TokenKind {
     Str(String),
     Instant(i64, u32),
     Duration(i64, u32),
+    Now,
+    Today,
+    TodayAt(u32, u32, u32, u32),
 
     // Arithmetic / Concatenation
     Plus,
@@ -114,8 +117,17 @@ impl fmt::Display for TokenKind {
             TokenKind::Int(n) => write!(f, "{}", n),
             TokenKind::Float(n) => write!(f, "{}", n),
             TokenKind::Str(s) => write!(f, "\"{}\"", s),
-            TokenKind::Instant(secs, nanos) => write!(f, "@{}.{:09}", secs, nanos),
+            TokenKind::Instant(secs, nanos) => write!(f, "@unix_{}.{:09}", secs, nanos),
             TokenKind::Duration(secs, nanos) => write!(f, "#{}.{:09}s", secs, nanos),
+            TokenKind::Now => write!(f, "@now"),
+            TokenKind::Today => write!(f, "@today"),
+            TokenKind::TodayAt(h, m, s, n) => {
+                if *n == 0 {
+                    write!(f, "@today_{:02}:{:02}:{:02}", h, m, s)
+                } else {
+                    write!(f, "@today_{:02}:{:02}:{:02}.{:09}", h, m, s, n)
+                }
+            }
             // Arithmetic / Concatenation
             TokenKind::Plus => write!(f, "+"),
             TokenKind::Minus => write!(f, "-"),
