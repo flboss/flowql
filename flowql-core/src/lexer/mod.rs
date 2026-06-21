@@ -1,6 +1,8 @@
 mod error;
 mod token;
+
 use std::borrow::Cow;
+use std::ops::Range;
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use miette::SourceSpan;
@@ -502,8 +504,7 @@ impl<'a> Lexer<'a> {
 
         if self.peek() == Some('_') {
             self.advance();
-            let hour = self
-                .read_digits_str()
+            let hour = self.source[self.advance_digits()]
                 .parse::<u32>()
                 .map_err(|_| LexError::InvalidHour(self.span_from(start)))?;
             if hour > 23 {
@@ -517,8 +518,7 @@ impl<'a> Lexer<'a> {
                     return Err(LexError::ExpectedColon(self.span_from(start)));
                 }
             }
-            let minute = self
-                .read_digits_str()
+            let minute = self.source[self.advance_digits()]
                 .parse::<u32>()
                 .map_err(|_| LexError::InvalidMinute(self.span_from(start)))?;
             if minute > 59 {
@@ -528,13 +528,13 @@ impl<'a> Lexer<'a> {
             let mut nanos = 0u32;
             if self.peek() == Some(':') {
                 self.advance();
-                let sec_str = self.read_digits_str();
+                let sec_range = self.advance_digits();
                 if self.peek() == Some('.') {
                     self.advance();
-                    let frac = self.read_digits_str();
-                    (secs, nanos) = split_seconds(&format!("{}.{}", sec_str, frac));
+                    let frac_range = self.advance_digits();
+                    (secs, nanos) = split_seconds(&self.source[sec_range.start..frac_range.end]);
                 } else {
-                    secs = sec_str.parse().unwrap_or(0);
+                    secs = self.source[sec_range].parse().unwrap_or(0);
                 }
             }
             Ok(self.token(TokenKind::TodayAt(hour, minute, secs, nanos)))
@@ -577,8 +577,8 @@ impl<'a> Lexer<'a> {
 
         let nanos = if self.peek() == Some('.') {
             self.advance();
-            let frac = self.read_digits_str();
-            let mut padded = frac;
+            let frac = self.advance_digits();
+            let mut padded = self.source[frac].to_string();
             while padded.len() < 9 {
                 padded.push('0');
             }
@@ -604,7 +604,7 @@ impl<'a> Lexer<'a> {
         if let Some('+') | Some('-') = self.peek() {
             self.advance();
         }
-        let year_str = self.read_digits_str();
+        let y_range = self.advance_digits();
 
         match self.peek() {
             Some('-') => {
@@ -614,7 +614,7 @@ impl<'a> Lexer<'a> {
                 return Err(LexError::ExpectedDateFormat(self.span_from(start)));
             }
         }
-        let month_str = self.read_digits_str();
+        let m_range = self.advance_digits();
         match self.peek() {
             Some('-') => {
                 self.advance();
@@ -623,7 +623,7 @@ impl<'a> Lexer<'a> {
                 return Err(LexError::ExpectedDateFormat(self.span_from(start)));
             }
         }
-        let day_str = self.read_digits_str();
+        let d_range = self.advance_digits();
 
         let mut hour = 0u32;
         let mut minute = 0u32;
@@ -632,8 +632,7 @@ impl<'a> Lexer<'a> {
 
         if self.peek() == Some('_') {
             self.advance();
-            hour = self
-                .read_digits_str()
+            hour = self.source[self.advance_digits()]
                 .parse::<u32>()
                 .map_err(|_| LexError::InvalidHour(self.span_from(start)))?;
             if hour > 23 {
@@ -647,8 +646,7 @@ impl<'a> Lexer<'a> {
                     return Err(LexError::ExpectedColon(self.span_from(start)));
                 }
             }
-            minute = self
-                .read_digits_str()
+            minute = self.source[self.advance_digits()]
                 .parse::<u32>()
                 .map_err(|_| LexError::InvalidMinute(self.span_from(start)))?;
             if minute > 59 {
@@ -656,28 +654,28 @@ impl<'a> Lexer<'a> {
             }
             if self.peek() == Some(':') {
                 self.advance();
-                let sec_str = self.read_digits_str();
+                let sec_range = self.advance_digits();
                 if self.peek() == Some('.') {
                     self.advance();
-                    let frac = self.read_digits_str();
-                    (secs, nanos) = split_seconds(&format!("{}.{}", sec_str, frac));
+                    let frac_range = self.advance_digits();
+                    (secs, nanos) = split_seconds(&self.source[sec_range.start..frac_range.end]);
                 } else {
-                    secs = sec_str.parse().unwrap_or(0);
+                    secs = self.source[sec_range].parse().unwrap_or(0);
                 }
             }
         }
 
-        let year: i32 = year_str
+        let year: i32 = self.source[y_range]
             .parse()
             .map_err(|_| LexError::InvalidYear(self.span_from(start)))?;
         let year = if negative { -year } else { year };
-        let month: u32 = month_str
+        let month: u32 = self.source[m_range]
             .parse()
             .map_err(|_| LexError::InvalidMonth(self.span_from(start)))?;
         if !(1..=12).contains(&month) {
             return Err(LexError::InvalidMonth(self.span_from(start)));
         }
-        let day: u32 = day_str
+        let day: u32 = self.source[d_range]
             .parse()
             .map_err(|_| LexError::InvalidDay(self.span_from(start)))?;
         if !(1..=31).contains(&day) {
@@ -695,14 +693,14 @@ impl<'a> Lexer<'a> {
 
     // TODO: #duration syntax: #1y2m3w4d5H6M7.89S
 
-    fn read_digits_str(&mut self) -> String {
+    fn advance_digits(&mut self) -> Range<usize> {
         let start = self.pos;
         while let Some(c) = self.peek()
             && c.is_ascii_digit()
         {
             self.advance();
         }
-        self.source[start..self.pos].to_string()
+        start..self.pos
     }
 }
 
