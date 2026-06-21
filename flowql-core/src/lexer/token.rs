@@ -114,8 +114,8 @@ impl fmt::Display for TokenKind {
             TokenKind::Int(n) => write!(f, "{}", n),
             TokenKind::Float(n) => write!(f, "{}", n),
             TokenKind::Str(s) => write!(f, "\"{}\"", s),
-            TokenKind::Instant(secs, nanos) => write!(f, "@<{}s {}ns>", secs, nanos),
-            TokenKind::Duration(secs, nanos) => write!(f, "@<{}s {}ns>", secs, nanos),
+            TokenKind::Instant(secs, nanos) => write!(f, "@{}.{:09}", secs, nanos),
+            TokenKind::Duration(secs, nanos) => write!(f, "#{}.{:09}s", secs, nanos),
             // Arithmetic / Concatenation
             TokenKind::Plus => write!(f, "+"),
             TokenKind::Minus => write!(f, "-"),

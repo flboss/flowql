@@ -1,4 +1,6 @@
 mod token;
+use std::borrow::Cow;
+
 pub use token::{Span, Token, TokenKind};
 
 use thiserror::Error;
@@ -135,30 +137,29 @@ impl<'a> Lexer<'a> {
                 Some('/') if self.peek2() == Some('*') => {
                     self.advance();
                     self.advance();
-                    self.skip_block_comment(1);
+                    self.skip_block_comment();
                 }
                 _ => break,
             }
         }
     }
 
-    fn skip_block_comment(&mut self, depth: u32) {
+    fn skip_block_comment(&mut self) {
         while let Some(c) = self.advance() {
             match c {
+                // handle nested block comments
                 '/' if self.peek() == Some('*') => {
                     self.advance();
-                    self.skip_block_comment(depth + 1);
+                    self.skip_block_comment();
                 }
                 '*' if self.peek() == Some('/') => {
                     self.advance();
-                    if depth == 1 {
-                        return;
-                    }
                     return;
                 }
                 _ => {}
             }
         }
+        // TODO: error on unclosed comment
     }
 
     // ---- lexers for specific token types ----
@@ -299,8 +300,7 @@ impl<'a> Lexer<'a> {
 
         self.read_digits();
 
-        let has_dot =
-            self.peek() == Some('.') && self.peek2().is_some_and(|c| c.is_ascii_digit());
+        let has_dot = self.peek() == Some('.') && self.peek2().is_some_and(|c| c.is_ascii_digit());
 
         if has_dot {
             self.advance();
@@ -333,57 +333,46 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_hex_int(&mut self) -> Result<Token, LexError> {
-        let start = self.pos;
-        self.advance();
-        self.advance();
-        while let Some(c) = self.peek() {
-            if c.is_ascii_hexdigit() || c == '_' {
-                self.advance();
-            } else {
-                break;
-            }
-        }
-        let raw = &self.source[start..self.pos];
-        let clean = raw.replace('_', "").replace("0x", "").replace("0X", "");
-        let value = i64::from_str_radix(&clean, 16)
-            .map_err(|_| LexError::InvalidNumber(raw.to_string(), Span::new(start, self.pos)))?;
-        Ok(self.token(TokenKind::Int(value)))
+        self.lex_int_radix(16, "0x", |c| c.is_ascii_hexdigit() || c == '_')
     }
 
     fn lex_octal_int(&mut self) -> Result<Token, LexError> {
+        self.lex_int_radix(8, "0o", |c| {
+            c.is_ascii_digit() && c != '8' && c != '9' || c == '_'
+        })
+    }
+
+    fn lex_binary_int(&mut self) -> Result<Token, LexError> {
+        self.lex_int_radix(2, "0b", |c| c == '0' || c == '1' || c == '_')
+    }
+
+    fn lex_int_radix<F>(&mut self, radix: u32, prefix: &str, is_digit: F) -> Result<Token, LexError>
+    where
+        F: Fn(char) -> bool,
+    {
         let start = self.pos;
-        self.advance();
-        self.advance();
-        while let Some(c) = self.peek() {
-            if c.is_ascii_digit() && c != '8' && c != '9' || c == '_' {
-                self.advance();
-            } else {
-                break;
-            }
+        for _ in 0..prefix.chars().count() {
+            self.advance();
+        }
+        while let Some(c) = self.peek()
+            && is_digit(c)
+        {
+            self.advance();
         }
         let raw = &self.source[start..self.pos];
-        let clean = raw.replace('_', "").replace("0o", "").replace("0O", "");
-        let value = i64::from_str_radix(&clean, 8)
+        let clean = Self::clean_int_prefix(raw, prefix);
+        let value = i64::from_str_radix(&clean, radix)
             .map_err(|_| LexError::InvalidNumber(raw.to_string(), Span::new(start, self.pos)))?;
         Ok(self.token(TokenKind::Int(value)))
     }
 
-    fn lex_binary_int(&mut self) -> Result<Token, LexError> {
-        let start = self.pos;
-        self.advance();
-        self.advance();
-        while let Some(c) = self.peek() {
-            if c == '0' || c == '1' || c == '_' {
-                self.advance();
-            } else {
-                break;
-            }
+    fn clean_int_prefix(raw: &'a str, prefix: &str) -> Cow<'a, str> {
+        let clean = raw.strip_prefix(prefix).unwrap_or(raw);
+        if clean.contains('_') {
+            Cow::Owned(clean.replace('_', ""))
+        } else {
+            Cow::Borrowed(clean)
         }
-        let raw = &self.source[start..self.pos];
-        let clean = raw.replace('_', "").replace("0b", "").replace("0B", "");
-        let value = i64::from_str_radix(&clean, 2)
-            .map_err(|_| LexError::InvalidNumber(raw.to_string(), Span::new(start, self.pos)))?;
-        Ok(self.token(TokenKind::Int(value)))
     }
 
     fn lex_float_exponent(&mut self) {
@@ -395,12 +384,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn read_digits(&mut self) {
-        while let Some(c) = self.peek() {
-            if c.is_ascii_digit() || c == '_' {
-                self.advance();
-            } else {
-                break;
-            }
+        while let Some(c) = self.peek()
+            && (c.is_ascii_digit() || c == '_')
+        {
+            self.advance();
         }
     }
 
@@ -417,43 +404,42 @@ impl<'a> Lexer<'a> {
                 Some('"') => {
                     break;
                 }
-                Some('\\') => {
-                    match self.advance() {
-                        None => {
-                            return Err(LexError::UnclosedString(Span::new(start, self.pos)));
-                        }
-                        Some('"') => value.push('"'),
-                        Some('\\') => value.push('\\'),
-                        Some('n') => value.push('\n'),
-                        Some('t') => value.push('\t'),
-                        Some('r') => value.push('\r'),
-                        Some('0') => value.push('\0'),
-                        Some('u') => {
-                            let hex_start = self.pos;
-                            for _ in 0..4 {
-                                self.advance();
-                            }
-                            let hex = &self.source[hex_start..self.pos];
-                            let code = u32::from_str_radix(hex, 16).map_err(|_| {
-                                LexError::Custom(
-                                    format!("invalid unicode escape: \\u{}", hex),
-                                    Span::new(hex_start - 2, self.pos),
-                                )
-                            })?;
-                            let c = char::from_u32(code).ok_or_else(|| {
-                                LexError::Custom(
-                                    format!("invalid unicode code point: {}", code),
-                                    Span::new(hex_start - 2, self.pos),
-                                )
-                            })?;
-                            value.push(c);
-                        }
-                        Some(c) => {
-                            value.push('\\');
-                            value.push(c);
-                        }
+                Some('\\') => match self.advance() {
+                    None => {
+                        return Err(LexError::UnclosedString(Span::new(start, self.pos)));
                     }
-                }
+                    Some('"') => value.push('"'),
+                    Some('\\') => value.push('\\'),
+                    Some('n') => value.push('\n'),
+                    Some('t') => value.push('\t'),
+                    Some('r') => value.push('\r'),
+                    Some('0') => value.push('\0'),
+                    Some('u') => {
+                        let hex_start = self.pos;
+                        for _ in 0..4 {
+                            self.advance();
+                        }
+                        let hex = &self.source[hex_start..self.pos];
+                        let code = u32::from_str_radix(hex, 16).map_err(|_| {
+                            LexError::Custom(
+                                format!("invalid unicode escape: \\u{}", hex),
+                                Span::new(hex_start - 2, self.pos),
+                            )
+                        })?;
+                        let c = char::from_u32(code).ok_or_else(|| {
+                            LexError::Custom(
+                                format!("invalid unicode code point: {}", code),
+                                Span::new(hex_start - 2, self.pos),
+                            )
+                        })?;
+                        value.push(c);
+                    }
+                    // TODO: error on unknown escape sequence
+                    Some(c) => {
+                        value.push('\\');
+                        value.push(c);
+                    }
+                },
                 Some(c) => value.push(c),
             }
         }
@@ -461,6 +447,9 @@ impl<'a> Lexer<'a> {
         Ok(self.token(TokenKind::Str(value)))
     }
 
+    // TODO: support @now/@today?
+    // shape: @today / @today_hh:mm:ss.sss
+    // shape: @now
     fn lex_at_literal(&mut self) -> Result<Token, LexError> {
         let start = self.pos;
         self.advance();
@@ -468,6 +457,7 @@ impl<'a> Lexer<'a> {
         let first = self.read_digits_str();
 
         match self.peek() {
+            // shape: @YYYY-MM-DD_hh:mm:ss.sss
             Some('-') => {
                 self.advance();
                 let month = self.read_digits_str();
@@ -514,42 +504,22 @@ impl<'a> Lexer<'a> {
                 let total_secs = date_secs + hour as i64 * 3600 + minute as i64 * 60 + secs as i64;
                 Ok(self.token(TokenKind::Instant(total_secs, nanos)))
             }
-            Some(':') => {
-                let hours: u32 = first
-                    .parse::<u32>()
-                    .map_err(|_| self.err_at("invalid hours", Span::new(start, self.pos)))?;
-                self.advance();
-                let minutes_str = self.read_digits_str();
-                let minutes: u32 = minutes_str
-                    .parse::<u32>()
-                    .map_err(|_| self.err_at("invalid minutes", Span::new(start, self.pos)))?;
-
-                let mut seconds = 0u32;
-                let mut nanos = 0u32;
-
-                if self.peek() == Some(':') {
-                    self.advance();
-                    let sec_str = self.read_digits_str();
-                    let (whole, frac) = split_seconds(&sec_str);
-                    seconds = whole;
-                    nanos = frac;
-                }
-
-                let total = hours as i64 * 3600 + minutes as i64 * 60 + seconds as i64;
-                Ok(self.token(TokenKind::Duration(total, nanos)))
+            Some('.') => {
+                // TODO: add Instant shape: @ss.sss
+                todo!()
             }
             _ => Err(self.err_at("invalid time literal", Span::new(start, self.pos))),
         }
     }
 
+    // TODO: #duration syntax: #1y2M3d4h5m6s7.89s
+
     fn read_digits_str(&mut self) -> String {
         let start = self.pos;
-        while let Some(c) = self.peek() {
-            if c.is_ascii_digit() {
-                self.advance();
-            } else {
-                break;
-            }
+        while let Some(c) = self.peek()
+            && c.is_ascii_digit()
+        {
+            self.advance();
         }
         self.source[start..self.pos].to_string()
     }
@@ -603,6 +573,8 @@ fn parse_date(year_str: &str, month_str: &str, day_str: &str) -> Result<i64, Str
     Ok(days * 86400)
 }
 
+/// proleptic gregorian calendar implementation adapted from
+/// https://howardhinnant.github.io/date_algorithms.html#days_from_civil
 fn days_since_unix_epoch(year: i64, month: u32, day: u32) -> Option<i64> {
     let (y, m) = if month <= 2 {
         (year - 1, month + 12)
@@ -694,8 +666,8 @@ mod tests {
         check_tokens("\"hello\"", &[TokenKind::Str("hello".into())]);
         check_tokens("\"hello world\"", &[TokenKind::Str("hello world".into())]);
         check_tokens(
-            "\"escaped \\\"quote\\\"\"",
-            &[TokenKind::Str("escaped \"quote\"".into())],
+            r#""escaped \"quote\"""#,
+            &[TokenKind::Str(r#"escaped "quote""#.into())],
         );
     }
 
