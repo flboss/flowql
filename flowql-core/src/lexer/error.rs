@@ -25,6 +25,9 @@ pub enum LexError {
     #[error("invalid unicode code point")]
     InvalidUnicodeCodePoint(u32, SourceSpan),
 
+    #[error("unknown escape sequence")]
+    InvalidEscape(char, SourceSpan),
+
     // number literals
     #[error("integer literal overflow")]
     IntOverflow(String, SourceSpan),
@@ -92,6 +95,7 @@ impl LexError {
             | LexError::InvalidFloat(_, s)
             | LexError::InvalidUnicodeEscape(_, s)
             | LexError::InvalidUnicodeCodePoint(_, s)
+            | LexError::InvalidEscape(_, s)
             | LexError::InvalidTimeLiteral(s)
             | LexError::ExpectedNow(s)
             | LexError::ExpectedToday(s)
@@ -140,6 +144,9 @@ impl Diagnostic for LexError {
             )),
             Self::InvalidUnicodeCodePoint(cp, _) => {
                 Box::new(format!("U+{cp:04X} is not a valid unicode code point"))
+            }
+            Self::InvalidEscape(c, _) => {
+                Box::new(format!("`\\{c}` is not a recognized escape sequence"))
             }
             Self::InvalidTimeLiteral(_) => Box::new(
                 "use @now, @today / @today_HH:MM:SS.SSS, @unix_SS.SSS, or @yyyy-mm-dd_HH:MM:SS.SSS",

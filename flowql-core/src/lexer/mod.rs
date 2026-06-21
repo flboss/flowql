@@ -433,10 +433,11 @@ impl<'a> Lexer<'a> {
                         })?;
                         value.push(c);
                     }
-                    // TODO: error on unknown escape sequence
-                    Some(c) => {
-                        value.push('\\');
-                        value.push(c);
+                    Some(ch) => {
+                        return Err(LexError::InvalidEscape(
+                            ch,
+                            SourceSpan::from(self.pos - ch.len_utf8() - 1..self.pos),
+                        ));
                     }
                 },
                 Some(c) => value.push(c),
@@ -786,6 +787,12 @@ mod tests {
     #[test]
     fn test_string_continuation() {
         check_tokens("\"hello\\\nworld\"", &[TokenKind::Str("helloworld".into())]);
+    }
+
+    #[test]
+    fn test_invalid_escape() {
+        let mut lexer = Lexer::new(r#""\z""#);
+        assert!(lexer.next_token().is_err());
     }
 
     #[test]
