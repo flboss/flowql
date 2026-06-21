@@ -405,6 +405,8 @@ impl<'a> Lexer<'a> {
                     None => {
                         return Err(LexError::UnclosedString(SourceSpan::from(start..self.pos)));
                     }
+                    // allow string continuation on new line
+                    Some('\n') => {}
                     Some('"') => value.push('"'),
                     Some('\\') => value.push('\\'),
                     Some('n') => value.push('\n'),
@@ -779,6 +781,11 @@ mod tests {
             r#""escaped \"quote\"""#,
             &[TokenKind::Str(r#"escaped "quote""#.into())],
         );
+    }
+
+    #[test]
+    fn test_string_continuation() {
+        check_tokens("\"hello\\\nworld\"", &[TokenKind::Str("helloworld".into())]);
     }
 
     #[test]
