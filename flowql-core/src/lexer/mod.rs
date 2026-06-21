@@ -395,7 +395,7 @@ impl<'a> Lexer<'a> {
 
         loop {
             match self.advance() {
-                None => {
+                None | Some('\n') => {
                     return Err(LexError::UnclosedString(SourceSpan::from(start..self.pos)));
                 }
                 Some('"') => {
