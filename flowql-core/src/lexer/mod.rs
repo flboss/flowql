@@ -470,7 +470,7 @@ impl<'a> Lexer<'a> {
             Some('n') => self.lex_at_now(start),
             Some('t') => self.lex_at_today(start),
             Some('u') => self.lex_at_unix(start),
-            Some(c) if c.is_ascii_digit() => self.lex_at_date(start),
+            Some(c) if c.is_ascii_digit() || c == '+' || c == '-' => self.lex_at_date(start),
             _ => Err(LexError::InvalidTimeLiteral(self.span_from(start))),
         }
     }
@@ -600,6 +600,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_at_date(&mut self, start: usize) -> Result<Token, LexError> {
+        let negative = self.peek() == Some('-');
+        if let Some('+') | Some('-') = self.peek() {
+            self.advance();
+        }
         let year_str = self.read_digits_str();
 
         match self.peek() {
@@ -666,6 +670,7 @@ impl<'a> Lexer<'a> {
         let year: i32 = year_str
             .parse()
             .map_err(|_| LexError::InvalidYear(self.span_from(start)))?;
+        let year = if negative { -year } else { year };
         let month: u32 = month_str
             .parse()
             .map_err(|_| LexError::InvalidMonth(self.span_from(start)))?;
@@ -1081,6 +1086,37 @@ mod tests {
         let tokens = lex_all("@2026-05-31_14:30:00");
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0], TokenKind::Instant(_, _)));
+    }
+
+    #[test]
+    fn test_instant_negative_year() {
+        let tokens = lex_all("@-2024-05-31");
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0], TokenKind::Instant(_, _)));
+    }
+
+    #[test]
+    fn test_instant_positive_sign_year() {
+        let tokens = lex_all("@+2024-05-31");
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0], TokenKind::Instant(_, _)));
+    }
+
+    #[test]
+    fn test_instant_negative_year_with_time() {
+        let tokens = lex_all("@-2000-01-15_06:30:00");
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0], TokenKind::Instant(_, _)));
+    }
+
+    #[test]
+    fn test_instants_epoch_sign() {
+        if let TokenKind::Instant(secs, _) = lex_all("@2026-05-31")[0] {
+            assert!(secs > 0, "year 2026 should be after 1970");
+        }
+        if let TokenKind::Instant(secs, _) = lex_all("@-1000-01-01")[0] {
+            assert!(secs < 0, "year -1000 should be before 1970");
+        }
     }
 
     #[test]
