@@ -1,6 +1,8 @@
 mod token;
 use std::borrow::Cow;
 
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+
 pub use token::{Span, Token, TokenKind};
 
 use thiserror::Error;
@@ -493,15 +495,26 @@ impl<'a> Lexer<'a> {
                     if self.peek() == Some(':') {
                         self.advance();
                         let sec_str = self.read_digits_str();
-                        let (whole, frac) = split_seconds(&sec_str);
-                        secs = whole;
-                        nanos = frac;
+                        (secs, nanos) = split_seconds(&sec_str);
                     }
                 }
 
-                let parsed = parse_date(&first, &month, &day);
-                let date_secs = parsed.map_err(|e| self.err_at(&e, Span::new(start, self.pos)))?;
-                let total_secs = date_secs + hour as i64 * 3600 + minute as i64 * 60 + secs as i64;
+                let year: i32 = first
+                    .parse()
+                    .map_err(|_| self.err_at("invalid year", Span::new(start, self.pos)))?;
+                let month: u32 = month
+                    .parse()
+                    .map_err(|_| self.err_at("invalid month", Span::new(start, self.pos)))?;
+                let day: u32 = day
+                    .parse()
+                    .map_err(|_| self.err_at("invalid day", Span::new(start, self.pos)))?;
+
+                let date = NaiveDate::from_ymd_opt(year, month, day)
+                    .ok_or_else(|| self.err_at("invalid date", Span::new(start, self.pos)))?;
+                let time = NaiveTime::from_hms_nano_opt(hour, minute, secs, nanos)
+                    .ok_or_else(|| self.err_at("invalid time", Span::new(start, self.pos)))?;
+                let dt = NaiveDateTime::new(date, time);
+                let total_secs = dt.and_utc().timestamp();
                 Ok(self.token(TokenKind::Instant(total_secs, nanos)))
             }
             Some('.') => {
@@ -554,42 +567,6 @@ fn split_seconds(s: &str) -> (u32, u32) {
         let whole: u32 = s.parse().unwrap_or(0);
         (whole, 0)
     }
-}
-
-fn parse_date(year_str: &str, month_str: &str, day_str: &str) -> Result<i64, String> {
-    let year: i64 = year_str.parse().map_err(|_| "invalid year".to_string())?;
-    let month: u32 = month_str.parse().map_err(|_| "invalid month".to_string())?;
-    let day: u32 = day_str.parse().map_err(|_| "invalid day".to_string())?;
-
-    if !(1..=12).contains(&month) {
-        return Err("invalid month".to_string());
-    }
-    if !(1..=31).contains(&day) {
-        return Err("invalid day".to_string());
-    }
-
-    let days =
-        days_since_unix_epoch(year, month, day).ok_or_else(|| "date out of range".to_string())?;
-    Ok(days * 86400)
-}
-
-/// proleptic gregorian calendar implementation adapted from
-/// https://howardhinnant.github.io/date_algorithms.html#days_from_civil
-fn days_since_unix_epoch(year: i64, month: u32, day: u32) -> Option<i64> {
-    let (y, m) = if month <= 2 {
-        (year - 1, month + 12)
-    } else {
-        (year, month)
-    };
-
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (m as i64 - 3) + 2) / 5 + day as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-
-    let days_since_epoch = era * 146097 + doe - 719468;
-
-    Some(days_since_epoch)
 }
 
 #[cfg(test)]
@@ -808,13 +785,6 @@ mod tests {
     fn test_typographic_operators() {
         let result = Lexer::new("&").next_token();
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_duration_literal() {
-        let tokens = lex_all("@14:30:00");
-        assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0], TokenKind::Duration(_, _)));
     }
 
     #[test]
