@@ -1,32 +1,14 @@
+use miette::SourceSpan;
 use std::fmt;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl Span {
-    pub fn new(start: usize, end: usize) -> Self {
-        Span { start, end }
-    }
-
-    pub fn merge(self, other: Span) -> Span {
-        Span {
-            start: self.start.min(other.start),
-            end: self.end.max(other.end),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
-    pub span: Span,
+    pub span: SourceSpan,
 }
 
 impl Token {
-    pub fn new(kind: TokenKind, span: Span) -> Self {
+    pub fn new(kind: TokenKind, span: SourceSpan) -> Self {
         Token { kind, span }
     }
 }

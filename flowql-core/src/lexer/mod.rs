@@ -1,26 +1,13 @@
+mod error;
 mod token;
 use std::borrow::Cow;
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use miette::SourceSpan;
 
-pub use token::{Span, Token, TokenKind};
-
-use thiserror::Error;
-
-#[derive(Debug, Clone, PartialEq, Error)]
-pub enum LexError {
-    #[error("unexpected character: '{0}'")]
-    UnexpectedChar(char, Span),
-
-    #[error("unclosed string literal")]
-    UnclosedString(Span),
-
-    #[error("invalid number literal: {0}")]
-    InvalidNumber(String, Span),
-
-    #[error("{0}")]
-    Custom(String, Span),
-}
+pub use error::LexError;
+pub use token::Token;
+pub use token::TokenKind;
 
 pub struct Lexer<'a> {
     source: &'a str,
@@ -109,15 +96,15 @@ impl<'a> Lexer<'a> {
     }
 
     fn token(&self, kind: TokenKind) -> Token {
-        Token::new(kind, Span::new(self.start, self.pos))
+        Token::new(kind, SourceSpan::from(self.start..self.pos))
     }
 
-    fn span(&self, start: usize) -> Span {
-        Span::new(start, self.pos)
+    fn span_from(&self, start: usize) -> SourceSpan {
+        SourceSpan::from(start..self.pos)
     }
 
-    fn single_span(&self) -> Span {
-        Span::new(self.pos, self.pos + 1)
+    fn single_span(&self) -> SourceSpan {
+        SourceSpan::from(self.pos..self.pos + 1)
     }
 
     fn skip_whitespace_and_comments(&mut self) {
@@ -149,7 +136,6 @@ impl<'a> Lexer<'a> {
     fn skip_block_comment(&mut self) {
         while let Some(c) = self.advance() {
             match c {
-                // handle nested block comments
                 '/' if self.peek() == Some('*') => {
                     self.advance();
                     self.skip_block_comment();
@@ -247,8 +233,9 @@ impl<'a> Lexer<'a> {
             self.advance();
             Ok(self.token(TokenKind::AmpAmp))
         } else {
-            let span = self.span(self.pos - 1);
-            Err(LexError::UnexpectedChar('&', span))
+            Err(LexError::UnexpectedAmpersand(SourceSpan::from(
+                self.pos - 1..self.pos,
+            )))
         }
     }
 
@@ -261,8 +248,9 @@ impl<'a> Lexer<'a> {
             self.advance();
             Ok(self.token(TokenKind::PipePipe))
         } else {
-            let span = self.span(self.pos - 1);
-            Err(LexError::UnexpectedChar('|', span))
+            Err(LexError::UnexpectedPipe(SourceSpan::from(
+                self.pos - 1..self.pos,
+            )))
         }
     }
 
@@ -311,24 +299,24 @@ impl<'a> Lexer<'a> {
                 self.lex_float_exponent();
             }
             let raw = &self.source[start..self.pos];
-            let clean = raw.replace('_', "");
+            let clean = Self::clean_int_prefix(raw, "");
             let value: f64 = clean.parse().map_err(|_| {
-                LexError::InvalidNumber(raw.to_string(), Span::new(start, self.pos))
+                LexError::InvalidFloat(raw.to_string(), SourceSpan::from(start..self.pos))
             })?;
             Ok(self.token(TokenKind::Float(value)))
         } else if let Some('e') | Some('E') = self.peek() {
             self.lex_float_exponent();
             let raw = &self.source[start..self.pos];
-            let clean = raw.replace('_', "");
+            let clean = Self::clean_int_prefix(raw, "");
             let value: f64 = clean.parse().map_err(|_| {
-                LexError::InvalidNumber(raw.to_string(), Span::new(start, self.pos))
+                LexError::InvalidFloat(raw.to_string(), SourceSpan::from(start..self.pos))
             })?;
             Ok(self.token(TokenKind::Float(value)))
         } else {
             let raw = &self.source[start..self.pos];
-            let clean = raw.replace('_', "");
+            let clean = Self::clean_int_prefix(raw, "");
             let value: i64 = clean.parse().map_err(|_| {
-                LexError::InvalidNumber(raw.to_string(), Span::new(start, self.pos))
+                LexError::IntOverflow(raw.to_string(), SourceSpan::from(start..self.pos))
             })?;
             Ok(self.token(TokenKind::Int(value)))
         }
@@ -363,8 +351,15 @@ impl<'a> Lexer<'a> {
         }
         let raw = &self.source[start..self.pos];
         let clean = Self::clean_int_prefix(raw, prefix);
-        let value = i64::from_str_radix(&clean, radix)
-            .map_err(|_| LexError::InvalidNumber(raw.to_string(), Span::new(start, self.pos)))?;
+        if clean.is_empty() {
+            return Err(LexError::EmptyIntLiteral(
+                raw.to_string(),
+                SourceSpan::from(start..self.pos),
+            ));
+        }
+        let value = i64::from_str_radix(&clean, radix).map_err(|_| {
+            LexError::IntOverflow(raw.to_string(), SourceSpan::from(start..self.pos))
+        })?;
         Ok(self.token(TokenKind::Int(value)))
     }
 
@@ -401,14 +396,14 @@ impl<'a> Lexer<'a> {
         loop {
             match self.advance() {
                 None => {
-                    return Err(LexError::UnclosedString(Span::new(start, self.pos)));
+                    return Err(LexError::UnclosedString(SourceSpan::from(start..self.pos)));
                 }
                 Some('"') => {
                     break;
                 }
                 Some('\\') => match self.advance() {
                     None => {
-                        return Err(LexError::UnclosedString(Span::new(start, self.pos)));
+                        return Err(LexError::UnclosedString(SourceSpan::from(start..self.pos)));
                     }
                     Some('"') => value.push('"'),
                     Some('\\') => value.push('\\'),
@@ -423,15 +418,15 @@ impl<'a> Lexer<'a> {
                         }
                         let hex = &self.source[hex_start..self.pos];
                         let code = u32::from_str_radix(hex, 16).map_err(|_| {
-                            LexError::Custom(
-                                format!("invalid unicode escape: \\u{}", hex),
-                                Span::new(hex_start - 2, self.pos),
+                            LexError::InvalidUnicodeEscape(
+                                hex.to_string(),
+                                SourceSpan::from(hex_start - 2..self.pos),
                             )
                         })?;
                         let c = char::from_u32(code).ok_or_else(|| {
-                            LexError::Custom(
-                                format!("invalid unicode code point: {}", code),
-                                Span::new(hex_start - 2, self.pos),
+                            LexError::InvalidUnicodeCodePoint(
+                                code,
+                                SourceSpan::from(hex_start - 2..self.pos),
                             )
                         })?;
                         value.push(c);
@@ -458,7 +453,7 @@ impl<'a> Lexer<'a> {
             Some('t') => self.lex_at_today(start),
             Some('u') => self.lex_at_unix(start),
             Some(c) if c.is_ascii_digit() => self.lex_at_date(start),
-            _ => Err(self.err_at("invalid time literal", Span::new(start, self.pos))),
+            _ => Err(LexError::InvalidTimeLiteral(self.span_from(start))),
         }
     }
 
@@ -466,11 +461,13 @@ impl<'a> Lexer<'a> {
         for ch in "now".chars() {
             match self.advance() {
                 Some(c) if c == ch => {}
-                _ => return Err(self.err_at("expected 'now'", Span::new(start, self.pos))),
+                _ => {
+                    return Err(LexError::ExpectedNow(self.span_from(start)));
+                }
             }
         }
         if self.peek().is_some_and(is_ident_continue) {
-            return Err(self.err_at("expected 'now'", Span::new(start, self.pos)));
+            return Err(LexError::ExpectedNow(self.span_from(start)));
         }
         Ok(self.token(TokenKind::Now))
     }
@@ -479,7 +476,9 @@ impl<'a> Lexer<'a> {
         for ch in "today".chars() {
             match self.advance() {
                 Some(c) if c == ch => {}
-                _ => return Err(self.err_at("expected 'today'", Span::new(start, self.pos))),
+                _ => {
+                    return Err(LexError::ExpectedToday(self.span_from(start)));
+                }
             }
         }
 
@@ -488,17 +487,25 @@ impl<'a> Lexer<'a> {
             let hour = self
                 .read_digits_str()
                 .parse::<u32>()
-                .map_err(|_| self.err_at("invalid hour", Span::new(start, self.pos)))?;
+                .map_err(|_| LexError::InvalidHour(self.span_from(start)))?;
+            if hour > 23 {
+                return Err(LexError::InvalidHour(self.span_from(start)));
+            }
             match self.peek() {
                 Some(':') => {
                     self.advance();
                 }
-                _ => return Err(self.err_at("expected ':' in time", Span::new(start, self.pos))),
+                _ => {
+                    return Err(LexError::ExpectedColon(self.span_from(start)));
+                }
             }
             let minute = self
                 .read_digits_str()
                 .parse::<u32>()
-                .map_err(|_| self.err_at("invalid minute", Span::new(start, self.pos)))?;
+                .map_err(|_| LexError::InvalidMinute(self.span_from(start)))?;
+            if minute > 59 {
+                return Err(LexError::InvalidMinute(self.span_from(start)));
+            }
             let mut secs = 0u32;
             let mut nanos = 0u32;
             if self.peek() == Some(':') {
@@ -515,7 +522,7 @@ impl<'a> Lexer<'a> {
             Ok(self.token(TokenKind::TodayAt(hour, minute, secs, nanos)))
         } else {
             if self.peek().is_some_and(is_ident_continue) {
-                return Err(self.err_at("expected 'today'", Span::new(start, self.pos)));
+                return Err(LexError::ExpectedToday(self.span_from(start)));
             }
             Ok(self.token(TokenKind::Today))
         }
@@ -525,17 +532,28 @@ impl<'a> Lexer<'a> {
         for ch in "unix_".chars() {
             match self.advance() {
                 Some(c) if c == ch => {}
-                _ => return Err(self.err_at("expected 'unix_'", Span::new(start, self.pos))),
+                _ => {
+                    return Err(LexError::ExpectedUnixPrefix(self.span_from(start)));
+                }
             }
         }
-
-        let sec_str = self.read_digits_str();
-        if sec_str.is_empty() {
-            return Err(self.err_at("expected unix timestamp", Span::new(start, self.pos)));
+        let start = self.pos;
+        if let Some('+') | Some('-') = self.peek() {
+            self.advance();
         }
-        let secs: i64 = sec_str
-            .parse()
-            .map_err(|_| self.err_at("invalid unix timestamp", Span::new(start, self.pos)))?;
+        while let Some(c) = self.peek()
+            && c.is_ascii_digit()
+        {
+            self.advance();
+        }
+        let sec_str = &self.source[start..self.pos];
+
+        if sec_str.is_empty() {
+            return Err(LexError::ExpectedUnixTimestamp(self.span_from(start)));
+        }
+        let secs: i64 = sec_str.parse().map_err(|_| {
+            LexError::InvalidUnixTimestamp(sec_str.to_string(), self.span_from(start))
+        })?;
 
         let nanos = if self.peek() == Some('.') {
             self.advance();
@@ -563,25 +581,19 @@ impl<'a> Lexer<'a> {
                 self.advance();
             }
             _ => {
-                return Err(self.err_at(
-                    "expected date format yyyy-mm-dd",
-                    Span::new(start, self.pos),
-                ));
+                return Err(LexError::ExpectedDateFormat(self.span_from(start)));
             }
         }
-        let month = self.read_digits_str();
+        let month_str = self.read_digits_str();
         match self.peek() {
             Some('-') => {
                 self.advance();
             }
             _ => {
-                return Err(self.err_at(
-                    "expected date format yyyy-mm-dd",
-                    Span::new(start, self.pos),
-                ));
+                return Err(LexError::ExpectedDateFormat(self.span_from(start)));
             }
         }
-        let day = self.read_digits_str();
+        let day_str = self.read_digits_str();
 
         let mut hour = 0u32;
         let mut minute = 0u32;
@@ -593,19 +605,25 @@ impl<'a> Lexer<'a> {
             hour = self
                 .read_digits_str()
                 .parse::<u32>()
-                .map_err(|_| self.err_at("invalid hour", Span::new(start, self.pos)))?;
+                .map_err(|_| LexError::InvalidHour(self.span_from(start)))?;
+            if hour > 23 {
+                return Err(LexError::InvalidHour(self.span_from(start)));
+            }
             match self.peek() {
                 Some(':') => {
                     self.advance();
                 }
                 _ => {
-                    return Err(self.err_at("expected ':' in time", Span::new(start, self.pos)));
+                    return Err(LexError::ExpectedColon(self.span_from(start)));
                 }
             }
             minute = self
                 .read_digits_str()
                 .parse::<u32>()
-                .map_err(|_| self.err_at("invalid minute", Span::new(start, self.pos)))?;
+                .map_err(|_| LexError::InvalidMinute(self.span_from(start)))?;
+            if minute > 59 {
+                return Err(LexError::InvalidMinute(self.span_from(start)));
+            }
             if self.peek() == Some(':') {
                 self.advance();
                 let sec_str = self.read_digits_str();
@@ -621,18 +639,24 @@ impl<'a> Lexer<'a> {
 
         let year: i32 = year_str
             .parse()
-            .map_err(|_| self.err_at("invalid year", Span::new(start, self.pos)))?;
-        let month: u32 = month
+            .map_err(|_| LexError::InvalidYear(self.span_from(start)))?;
+        let month: u32 = month_str
             .parse()
-            .map_err(|_| self.err_at("invalid month", Span::new(start, self.pos)))?;
-        let day: u32 = day
+            .map_err(|_| LexError::InvalidMonth(self.span_from(start)))?;
+        if !(1..=12).contains(&month) {
+            return Err(LexError::InvalidMonth(self.span_from(start)));
+        }
+        let day: u32 = day_str
             .parse()
-            .map_err(|_| self.err_at("invalid day", Span::new(start, self.pos)))?;
+            .map_err(|_| LexError::InvalidDay(self.span_from(start)))?;
+        if !(1..=31).contains(&day) {
+            return Err(LexError::InvalidDay(self.span_from(start)));
+        }
 
         let date = NaiveDate::from_ymd_opt(year, month, day)
-            .ok_or_else(|| self.err_at("invalid date", Span::new(start, self.pos)))?;
+            .ok_or_else(|| LexError::InvalidDate(self.span_from(start)))?;
         let time = NaiveTime::from_hms_nano_opt(hour, minute, secs, nanos)
-            .ok_or_else(|| self.err_at("invalid time", Span::new(start, self.pos)))?;
+            .ok_or_else(|| LexError::InvalidDate(self.span_from(start)))?;
         let dt = NaiveDateTime::new(date, time);
         let total_secs = dt.and_utc().timestamp();
         Ok(self.token(TokenKind::Instant(total_secs, nanos)))
@@ -648,10 +672,6 @@ impl<'a> Lexer<'a> {
             self.advance();
         }
         self.source[start..self.pos].to_string()
-    }
-
-    fn err_at(&self, msg: &str, span: Span) -> LexError {
-        LexError::Custom(msg.to_string(), span)
     }
 }
 
@@ -984,9 +1004,9 @@ mod tests {
     fn test_span_tracking() {
         let mut lexer = Lexer::new("let x");
         let t1 = lexer.next_token().unwrap();
-        assert_eq!(t1.span, Span::new(0, 3));
+        assert_eq!(t1.span, SourceSpan::from(0..3));
         let t2 = lexer.next_token().unwrap();
-        assert_eq!(t2.span, Span::new(4, 5));
+        assert_eq!(t2.span, SourceSpan::from(4..5));
     }
 
     #[test]
