@@ -555,10 +555,11 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
-        let start = self.pos;
+        let negative = self.peek() == Some('-');
         if let Some('+') | Some('-') = self.peek() {
             self.advance();
         }
+        let start = self.pos;
         while let Some(c) = self.peek()
             && c.is_ascii_digit()
         {
@@ -572,6 +573,7 @@ impl<'a> Lexer<'a> {
         let secs: i64 = sec_str.parse().map_err(|_| {
             LexError::InvalidUnixTimestamp(sec_str.to_string(), self.span_from(start))
         })?;
+        let secs = if negative { -secs } else { secs };
 
         let nanos = if self.peek() == Some('.') {
             self.advance();
@@ -586,6 +588,12 @@ impl<'a> Lexer<'a> {
             padded.parse().unwrap_or(0)
         } else {
             0
+        };
+
+        let (secs, nanos) = if negative && nanos > 0 {
+            (secs - 1, 1_000_000_000 - nanos)
+        } else {
+            (secs, nanos)
         };
 
         Ok(self.token(TokenKind::Instant(secs, nanos)))
@@ -1035,6 +1043,30 @@ mod tests {
     fn test_at_unix_error_bad_prefix() {
         let mut lexer = Lexer::new("@unixx_123");
         assert!(lexer.next_token().is_err());
+    }
+
+    #[test]
+    fn test_at_unix_negative_no_fraction() {
+        let tokens = lex_all("@unix_-5");
+        assert_eq!(tokens, &[TokenKind::Instant(-5, 0)]);
+    }
+
+    #[test]
+    fn test_at_unix_positive_sign() {
+        let tokens = lex_all("@unix_+7.25");
+        assert_eq!(tokens, &[TokenKind::Instant(7, 250000000)]);
+    }
+
+    #[test]
+    fn test_at_unix_negative_with_fraction() {
+        let tokens = lex_all("@unix_-1.2");
+        assert_eq!(tokens, &[TokenKind::Instant(-2, 800000000)]);
+    }
+
+    #[test]
+    fn test_at_unix_negative_zero_whole() {
+        let tokens = lex_all("@unix_-0.5");
+        assert_eq!(tokens, &[TokenKind::Instant(-1, 500000000)]);
     }
 
     #[test]
