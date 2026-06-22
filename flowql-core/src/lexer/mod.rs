@@ -503,48 +503,58 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        if self.peek() == Some('_') {
-            self.advance();
-            let hour = self.source[self.advance_digits()]
-                .parse::<u32>()
-                .map_err(|_| LexError::InvalidHour(self.span_from(start)))?;
-            if hour > 23 {
-                return Err(LexError::InvalidHour(self.span_from(start)));
+        match self.read_time_suffix(start)? {
+            Some((hour, minute, secs, nanos)) => {
+                Ok(self.token(TokenKind::TodayAt(hour, minute, secs, nanos)))
             }
-            match self.peek() {
-                Some(':') => {
-                    self.advance();
+            None => {
+                if self.peek().is_some_and(is_ident_continue) {
+                    return Err(LexError::ExpectedToday(self.span_from(start)));
                 }
-                _ => {
-                    return Err(LexError::ExpectedColon(self.span_from(start)));
-                }
+                Ok(self.token(TokenKind::Today))
             }
-            let minute = self.source[self.advance_digits()]
-                .parse::<u32>()
-                .map_err(|_| LexError::InvalidMinute(self.span_from(start)))?;
-            if minute > 59 {
-                return Err(LexError::InvalidMinute(self.span_from(start)));
-            }
-            let mut secs = 0u32;
-            let mut nanos = 0u32;
-            if self.peek() == Some(':') {
-                self.advance();
-                let sec_range = self.advance_digits();
-                if self.peek() == Some('.') {
-                    self.advance();
-                    let frac_range = self.advance_digits();
-                    (secs, nanos) = split_seconds(&self.source[sec_range.start..frac_range.end]);
-                } else {
-                    secs = self.source[sec_range].parse().unwrap_or(0);
-                }
-            }
-            Ok(self.token(TokenKind::TodayAt(hour, minute, secs, nanos)))
-        } else {
-            if self.peek().is_some_and(is_ident_continue) {
-                return Err(LexError::ExpectedToday(self.span_from(start)));
-            }
-            Ok(self.token(TokenKind::Today))
         }
+    }
+
+    fn read_time_suffix(&mut self, start: usize) -> Result<Option<(u32, u32, u32, u32)>, LexError> {
+        if self.peek() != Some('_') {
+            return Ok(None);
+        }
+        self.advance();
+        let hour = self.source[self.advance_digits()]
+            .parse::<u32>()
+            .map_err(|_| LexError::InvalidHour(self.span_from(start)))?;
+        if hour > 23 {
+            return Err(LexError::InvalidHour(self.span_from(start)));
+        }
+        match self.peek() {
+            Some(':') => {
+                self.advance();
+            }
+            _ => {
+                return Err(LexError::ExpectedColon(self.span_from(start)));
+            }
+        }
+        let minute = self.source[self.advance_digits()]
+            .parse::<u32>()
+            .map_err(|_| LexError::InvalidMinute(self.span_from(start)))?;
+        if minute > 59 {
+            return Err(LexError::InvalidMinute(self.span_from(start)));
+        }
+        let mut secs = 0u32;
+        let mut nanos = 0u32;
+        if self.peek() == Some(':') {
+            self.advance();
+            let sec_range = self.advance_digits();
+            if self.peek() == Some('.') {
+                self.advance();
+                let frac_range = self.advance_digits();
+                (secs, nanos) = split_seconds(&self.source[sec_range.start..frac_range.end]);
+            } else {
+                secs = self.source[sec_range].parse().unwrap_or(0);
+            }
+        }
+        Ok(Some((hour, minute, secs, nanos)))
     }
 
     fn lex_at_unix(&mut self, start: usize) -> Result<Token, LexError> {
@@ -579,14 +589,7 @@ impl<'a> Lexer<'a> {
         let nanos = if self.peek() == Some('.') {
             self.advance();
             let frac = self.advance_digits();
-            let mut padded = self.source[frac].to_string();
-            while padded.len() < 9 {
-                padded.push('0');
-            }
-            if padded.len() > 9 {
-                padded = padded[..9].to_string();
-            }
-            padded.parse().unwrap_or(0)
+            parse_nanos(&self.source[frac])
         } else {
             0
         };
@@ -626,45 +629,7 @@ impl<'a> Lexer<'a> {
         }
         let d_range = self.advance_digits();
 
-        let mut hour = 0u32;
-        let mut minute = 0u32;
-        let mut secs = 0u32;
-        let mut nanos = 0u32;
-
-        if self.peek() == Some('_') {
-            self.advance();
-            hour = self.source[self.advance_digits()]
-                .parse::<u32>()
-                .map_err(|_| LexError::InvalidHour(self.span_from(start)))?;
-            if hour > 23 {
-                return Err(LexError::InvalidHour(self.span_from(start)));
-            }
-            match self.peek() {
-                Some(':') => {
-                    self.advance();
-                }
-                _ => {
-                    return Err(LexError::ExpectedColon(self.span_from(start)));
-                }
-            }
-            minute = self.source[self.advance_digits()]
-                .parse::<u32>()
-                .map_err(|_| LexError::InvalidMinute(self.span_from(start)))?;
-            if minute > 59 {
-                return Err(LexError::InvalidMinute(self.span_from(start)));
-            }
-            if self.peek() == Some(':') {
-                self.advance();
-                let sec_range = self.advance_digits();
-                if self.peek() == Some('.') {
-                    self.advance();
-                    let frac_range = self.advance_digits();
-                    (secs, nanos) = split_seconds(&self.source[sec_range.start..frac_range.end]);
-                } else {
-                    secs = self.source[sec_range].parse().unwrap_or(0);
-                }
-            }
-        }
+        let (hour, minute, secs, nanos) = self.read_time_suffix(start)?.unwrap_or((0, 0, 0, 0));
 
         let year: i32 = self.source[y_range]
             .parse()
@@ -727,15 +692,7 @@ impl<'a> Lexer<'a> {
                 if frac_range.is_empty() {
                     return Err(LexError::IncompleteDurationFraction(self.span_from(start)));
                 }
-                let frac_str = &self.source[frac_range];
-                let mut padded = String::from(frac_str);
-                while padded.len() < 9 {
-                    padded.push('0');
-                }
-                if padded.len() > 9 {
-                    padded = padded[..9].to_string();
-                }
-                Some(padded.parse().unwrap_or(0))
+                Some(parse_nanos(&self.source[frac_range]))
             } else {
                 None
             };
@@ -817,18 +774,21 @@ fn is_ident_continue(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+fn parse_nanos(frac_str: &str) -> u32 {
+    let mut padded = String::from(frac_str);
+    while padded.len() < 9 {
+        padded.push('0');
+    }
+    if padded.len() > 9 {
+        padded = padded[..9].to_string();
+    }
+    padded.parse().unwrap_or(0)
+}
+
 fn split_seconds(s: &str) -> (u32, u32) {
     if let Some(dot_pos) = s.find('.') {
         let whole: u32 = s[..dot_pos].parse().unwrap_or(0);
-        let frac_str = &s[dot_pos + 1..];
-        let mut padded = String::from(frac_str);
-        while padded.len() < 9 {
-            padded.push('0');
-        }
-        if padded.len() > 9 {
-            padded = padded[..9].to_string();
-        }
-        let nanos: u32 = padded.parse().unwrap_or(0);
+        let nanos = parse_nanos(&s[dot_pos + 1..]);
         (whole, nanos)
     } else {
         let whole: u32 = s.parse().unwrap_or(0);
