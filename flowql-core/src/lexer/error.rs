@@ -81,6 +81,31 @@ pub enum LexError {
 
     #[error("invalid minute")]
     InvalidMinute(SourceSpan),
+
+    // duration literals
+    #[error("empty duration literal")]
+    EmptyDuration(SourceSpan),
+
+    #[error("unexpected duration suffix")]
+    UnexpectedDurationSuffix(char, SourceSpan),
+
+    #[error("missing duration suffix")]
+    MissingDurationSuffix(SourceSpan),
+
+    #[error("fractional value not allowed on '{0}' component")]
+    FractionalNotAllowed(char, SourceSpan),
+
+    #[error("duplicate '{0}' duration component")]
+    DuplicateDurationComponent(char, SourceSpan),
+
+    #[error("duration overflow")]
+    DurationOverflow(SourceSpan),
+
+    #[error("expected digit before decimal point in duration")]
+    ExpectedDurationDigits(SourceSpan),
+
+    #[error("expected digit after decimal point in duration")]
+    IncompleteDurationFraction(SourceSpan),
 }
 
 impl LexError {
@@ -109,7 +134,15 @@ impl LexError {
             | LexError::InvalidDay(s)
             | LexError::InvalidDate(s)
             | LexError::InvalidHour(s)
-            | LexError::InvalidMinute(s) => *s,
+            | LexError::InvalidMinute(s)
+            | LexError::EmptyDuration(s)
+            | LexError::UnexpectedDurationSuffix(_, s)
+            | LexError::MissingDurationSuffix(s)
+            | LexError::FractionalNotAllowed(_, s)
+            | LexError::DuplicateDurationComponent(_, s)
+            | LexError::DurationOverflow(s)
+            | LexError::ExpectedDurationDigits(s)
+            | LexError::IncompleteDurationFraction(s) => *s,
         }
     }
 }
@@ -172,6 +205,28 @@ impl Diagnostic for LexError {
             Self::InvalidDate(_) => Box::new("this date does not exist in the Gregorian calendar"),
             Self::InvalidHour(_) => Box::new("hour must be 0–23"),
             Self::InvalidMinute(_) => Box::new("minute must be 0–59"),
+            Self::EmptyDuration(_) => Box::new("add at least one component, e.g. #3w4d5h6m7s"),
+            Self::UnexpectedDurationSuffix(..) => Box::new(
+                "valid suffixes are: w (weeks), d (days), h (hours), m (minutes), s (seconds)",
+            ),
+            Self::MissingDurationSuffix(_) => {
+                Box::new("each duration component must end with a suffix: w, d, h, m, or s")
+            }
+            Self::FractionalNotAllowed(..) => {
+                Box::new("only seconds (s) support fractional values")
+            }
+            Self::DuplicateDurationComponent(suffix, _) => Box::new(format!(
+                "each component type may appear at most once, but '{suffix}' appears twice"
+            )),
+            Self::DurationOverflow(_) => Box::new(
+                "the total duration in seconds exceeds the range of a 64-bit signed integer",
+            ),
+            Self::ExpectedDurationDigits(_) => Box::new(
+                "duration values must start with at least one digit before any decimal point",
+            ),
+            Self::IncompleteDurationFraction(_) => {
+                Box::new("at least one digit is required after the decimal point")
+            }
         })
     }
 }

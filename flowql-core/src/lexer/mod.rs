@@ -59,6 +59,7 @@ impl<'a> Lexer<'a> {
             '{' => self.advance_and_return(TokenKind::LBrace),
             '?' => self.advance_and_return(TokenKind::Question),
             '@' => self.lex_at_literal(),
+            '#' => self.lex_duration(),
             '"' => self.lex_string(),
             '0'..='9' => self.lex_number(),
             c if is_ident_start(c) => self.lex_ident_or_keyword(),
@@ -691,7 +692,111 @@ impl<'a> Lexer<'a> {
         Ok(self.token(TokenKind::Instant(total_secs, nanos)))
     }
 
-    // TODO: #duration syntax: #1y2m3w4d5H6M7.89S
+    fn lex_duration(&mut self) -> Result<Token, LexError> {
+        let start = self.pos;
+        self.advance(); // consume '#'
+
+        let negative = self.peek() == Some('-');
+        if let Some('+') | Some('-') = self.peek() {
+            self.advance();
+        }
+
+        let mut weeks: bool = false;
+        let mut days: bool = false;
+        let mut hours: bool = false;
+        let mut minutes: bool = false;
+        let mut secs: bool = false;
+
+        let mut nanos: u32 = 0;
+        let mut total_secs: i64 = 0;
+
+        loop {
+            let int_range = self.advance_digits();
+            if int_range.is_empty() {
+                if self.peek() == Some('.') {
+                    return Err(LexError::ExpectedDurationDigits(self.span_from(start)));
+                } else {
+                    break;
+                }
+            }
+            let int_part: i64 = self.source[int_range].parse().unwrap();
+
+            let frac_part = if self.peek() == Some('.') {
+                self.advance();
+                let frac_range = self.advance_digits();
+                if frac_range.is_empty() {
+                    return Err(LexError::IncompleteDurationFraction(self.span_from(start)));
+                }
+                let frac_str = &self.source[frac_range];
+                let mut padded = String::from(frac_str);
+                while padded.len() < 9 {
+                    padded.push('0');
+                }
+                if padded.len() > 9 {
+                    padded = padded[..9].to_string();
+                }
+                Some(padded.parse().unwrap_or(0))
+            } else {
+                None
+            };
+
+            let suffix = match self.peek() {
+                Some(c @ ('w' | 'd' | 'h' | 'm' | 's')) => {
+                    self.advance();
+                    c
+                }
+                Some(c) => {
+                    return Err(LexError::UnexpectedDurationSuffix(c, self.span_from(start)));
+                }
+                None => {
+                    return Err(LexError::MissingDurationSuffix(self.span_from(start)));
+                }
+            };
+
+            if frac_part.is_some() && suffix != 's' {
+                return Err(LexError::FractionalNotAllowed(
+                    suffix,
+                    self.span_from(start),
+                ));
+            }
+
+            let (slot, multiplier) = match suffix {
+                'w' => (&mut weeks, 7 * 24 * 60 * 60),
+                'd' => (&mut days, 24 * 60 * 60),
+                'h' => (&mut hours, 60 * 60),
+                'm' => (&mut minutes, 60),
+                's' => {
+                    nanos = frac_part.unwrap_or(0);
+                    (&mut secs, 1)
+                }
+                _ => unreachable!(),
+            };
+            if *slot {
+                return Err(LexError::DuplicateDurationComponent(
+                    suffix,
+                    self.span_from(start),
+                ));
+            }
+            *slot = true;
+            total_secs = total_secs
+                .checked_add(
+                    int_part
+                        .checked_mul(multiplier)
+                        .ok_or(LexError::DurationOverflow(self.span_from(start)))?,
+                )
+                .ok_or(LexError::DurationOverflow(self.span_from(start)))?;
+        }
+
+        if !(weeks || days || hours || minutes || secs) {
+            return Err(LexError::EmptyDuration(self.span_from(start)));
+        }
+
+        if negative {
+            total_secs = -total_secs
+        }
+
+        Ok(self.token(TokenKind::Duration(total_secs, nanos)))
+    }
 
     fn advance_digits(&mut self) -> Range<usize> {
         let start = self.pos;
@@ -1131,5 +1236,40 @@ mod tests {
         let mut lexer = Lexer::new("@not_a_time");
         let result = lexer.next_token();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_duration_all_components() {
+        let tokens = lex_all("#3w4d5h6m7s");
+        assert_eq!(tokens, &[TokenKind::Duration(2178367, 0)]);
+    }
+
+    #[test]
+    fn test_duration_fractional_seconds() {
+        let tokens = lex_all("#7.89s");
+        assert_eq!(tokens, &[TokenKind::Duration(7, 890000000)]);
+    }
+
+    #[test]
+    fn test_duration_single_large() {
+        let tokens = lex_all("#500000d");
+        assert_eq!(tokens, &[TokenKind::Duration(43200000000, 0)]);
+    }
+
+    #[test]
+    fn test_duration_subset() {
+        let tokens = lex_all("#3d4h5m");
+        assert_eq!(tokens, &[TokenKind::Duration(273900, 0)]);
+    }
+
+    #[test]
+    fn test_duration_errors() {
+        let cases = &[
+            "#", "#1x", "#1d2d", "#1.5d", "#1.5s2s", "#5.s", "#.5s", "#1y", "#1M", "#1H", "#1S",
+        ];
+        for &src in cases {
+            let mut lexer = Lexer::new(src);
+            assert!(lexer.next_token().is_err(), "expected error for: {src}");
+        }
     }
 }
